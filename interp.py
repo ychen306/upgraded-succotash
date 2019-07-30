@@ -204,12 +204,18 @@ def unary_op(op):
     return Bits(int=op(a.int), length=bitwidth)
   return impl
 
+def binary_float_op(op):
+  def impl(a, b):
+    bitwidth = a.length
+    return Bits(float=op(a.float,b.float), length=bitwidth)
+  return impl
+
 # mappgin <op, is_float?> -> impl
 binary_op_impls = {
-    ('+', True): operator.add,
-    ('-', True): operator.sub,
-    ('*', True): operator.mul,
-    ('/', True): operator.truediv,
+    ('+', True): binary_float_op(operator.add),
+    ('-', True): binary_float_op(operator.sub),
+    ('*', True): binary_float_op(operator.mul),
+    ('/', True): binary_float_op(operator.truediv),
 
     ('*', False): binary_op(operator.mul),
     ('+', False): binary_op(operator.add),
@@ -361,12 +367,7 @@ def interpret_var(var, env):
   don't return a value but a slice/reference which can be update/deref later
   '''
   type = env.get_type(var.name)
-  if type.is_double:
-    slice = DoubleSlice(var.name, 0, type.bitwidth-1)
-  elif type.is_float:
-    slice = FloatSlice(var.name, 0, type.bitwidth-1)
-  else:
-    slice = IntegerSlice(var.name, 0, type.bitwidth-1)
+  slice = IntegerSlice(var.name, 0, type.bitwidth-1)
   return slice, type
 
 def is_number(expr):
