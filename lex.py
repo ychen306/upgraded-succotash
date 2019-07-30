@@ -1,4 +1,5 @@
 import ply.lex as lex
+from ast import Number, Var
 
 # TODO: lex hex literal
 
@@ -93,9 +94,9 @@ def t_CASE_HEADER(t):
   else:
     try:
       value = int(t.value[:-1])
-      t.value = value
+      t.value = Number(value)
     except:
-      t.value = t.value[:-1]
+      t.value = Var(t.value[:-1])
   return t
 
 def t_binary(t):

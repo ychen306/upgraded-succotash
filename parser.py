@@ -1,33 +1,7 @@
 import ply.yacc as yacc
-from collections import namedtuple
 
 from lex import tokens
-
-BitSlice = namedtuple('BitSlice', ['bv', 'hi', 'lo'])
-BitIndex = namedtuple('BitIndex', ['bv', 'idx'])
-Var = namedtuple('Var', ['name'])
-Number = namedtuple('Number', ['val'])
-Update = namedtuple('Update', ['lhs', 'rhs', 'modifier'])
-OpUpdate = namedtuple('OpUpdate', ['op_name'])
-Accumulate = namedtuple('Accumulate', ['lhs', 'rhs'])
-# inc is a flag specifying whether we increment of decrement the induction variable
-For = namedtuple('For', ['iterator', 'begin', 'end', 'body', 'inc'])
-While = namedtuple('While', ['cond', 'body'])
-If = namedtuple('If', ['cond', 'then', 'otherwise'])
-Call = namedtuple('Call', ['func', 'args'])
-BinaryExpr = namedtuple('BinaryExpr', ['op', 'a', 'b'])
-UnaryExpr = namedtuple('UnaryExpr', ['op', 'a'])
-PseudoExpr = namedtuple('PseudoExpr', ['desc'])
-PseudoStmt = namedtuple('PseudoStmt', ['desc'])
-Return = namedtuple('Return', ['val'])
-Select = namedtuple('Select', ['cond', 'then', 'otherwise'])
-RegSel = namedtuple('RegSel', ['base', 'idx'])
-Match = namedtuple('Match', ['val', 'cases'])
-Case = namedtuple('Case', ['val', 'stmt'])
-# property lookup
-Lookup = namedtuple('Lookup', ['obj', 'key'])
-FuncDef = namedtuple('FuncDef', ['name', 'params', 'body'])
-Break = namedtuple('Break', [])
+from ast import *
 
 def parse_binary(op, p):
   p[0] = BinaryExpr(op, p[1], p[3])
@@ -59,7 +33,7 @@ def p_stmt_break(p):
 
 def p_stmt_expr(p):
   'stmt : expr'
-  pass
+  p[0] = p[1]
 
 def p_match(p):
   '''stmt : CASE expr OF cases ESAC
@@ -158,7 +132,9 @@ def p_args(p):
 
 def p_expr_bit_index(p):
   'expr : expr LBRACE expr RBRACE'
-  p[0] = BitIndex(p[1], p[3])
+  lo = p[3]
+  hi = BinaryExpr('+', a=lo, b=Number(1))
+  p[0] = BitSlice(p[1], lo=lo, hi=hi)
 
 def p_expr_bit_slice(p):
   'expr : expr LBRACE expr COLON expr RBRACE'
@@ -294,7 +270,7 @@ precedence = (
     ('left', 'PLUS', 'MINUS'),
     ('left', 'TIMES', 'DIV', 'MOD'),
     ('right', 'NOT', 'NEG', 'BITWISE_NOT'),
-    ('left', 'DOT'),
+    ('left', 'DOT', 'LPAREN', 'RPAREN', 'LBRACE', 'RBRACE'),
 )
 
 parser = yacc.yacc()
