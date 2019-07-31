@@ -23,9 +23,10 @@ for intrin in data_root.iter('intrinsic'):
       intrin.attrib['name'].startswith('_mm')):
     continue
   if (intrin.attrib['name'].endswith('getcsr') or
-      intrin.attrib['name'].endswith('setcsr')):
+      intrin.attrib['name'].endswith('setcsr') or
+      'ord' in intrin.attrib['name']):
     continue
-  if sema is not None and 'MEM' in sema.text:
+  if sema is not None and ('MEM' in sema.text or 'FP16' in sema.text):
     continue
   if 'str' in intrin.attrib['name']:
     if inst is not None:

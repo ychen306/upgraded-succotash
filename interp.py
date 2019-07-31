@@ -1,7 +1,7 @@
 from ast import *
 from collections import namedtuple
 import operator
-from bitstring import Bits
+from bitstring import Bits, BitArray, CreationError
 import math
 
 # is is_pointer then this is a pointer to the type
@@ -35,26 +35,24 @@ concrete_types = {
     '__mmask32': IntegerType(8),
     '__mmask64': IntegerType(8),
 
+    'float': FloatType(32),
+    'double': FloatType(64),
     'int': IntegerType(32),
+    'const int': IntegerType(32),
     'uint': IntegerType(32),
     'unsigned int': IntegerType(32),
+    'unsigned char': IntegerType(8),
     '__int64': IntegerType(64),
     }
 
 def get_default_value(type):
   if type.is_float:
     num_elems = type.bitwidth // 32
-    return [1] * num_elems
+    return float_vec_to_bits([1] * num_elems, float_size=32)
   elif type.is_double:
     num_elems = type.bitwidth // 64
-    return [1] * num_elems
+    return float_vec_to_bits([1] * num_elems, float_size=64)
   return Bits(type.bitwidth)
-  
-def as_one(slice_or_val):
-  if type(slice_or_val) == list:
-    assert len(slice_or_val) == 1
-    return slice_or_val[0]
-  return slice_or_val
 
 def as_many(val):
   if type(val) == list:
@@ -70,6 +68,9 @@ class Environment:
     if value is None:
       value = get_default_value(type)
     self.vars[name] = type, value
+
+  def undef(self, name):
+    del self.vars[name]
 
   def has(self, name):
     return name in self.vars
@@ -92,67 +93,18 @@ class Environment:
 
 
 class Slice:
+  def __init__(self, var, lo_idx, hi_idx):
+    self.var = var
+    self.lo_idx = lo_idx
+    self.hi_idx = hi_idx
+    self.zero_extending = True
+
   def slice(self, lo, hi):
     new_slice = self.__class__(self.var, lo+self.lo_idx, hi+self.lo_idx)
     return new_slice
 
   def __repr__(self):
     return '%s[%d:%d]' % (self.var, self.lo_idx, self.hi_idx)
-
-class FloatSlice(Slice):
-  def __init__(self, var, lo_idx, hi_idx):
-    '''
-    var : str,
-    *_idx : int
-    '''
-    assert lo_idx % 32 == 0
-    assert hi_idx % 32 == 31
-    self.var = var
-    self.lo_idx = lo_idx
-    self.hi_idx = hi_idx
-
-  def get_lo_idx(self):
-    return self.lo_idx // 32
-
-  def get_hi_idx(self):
-    return (self.hi_idx + 1) // 32
-
-  def update(self, rhs, env):
-    '''
-    rhs : [float]
-    '''
-    val = env.get_value(self.var)
-    val[self.get_lo_idx() : self.get_hi_idx()] = as_many(rhs)
-    env.set_value(self.var, val)
-
-  def get_value(self, env):
-    val = env.get_value(self.var)
-    return val[self.get_lo_idx() : self.get_hi_idx()]
-
-class DoubleSlice(FloatSlice):
-  def __init__(self, var, lo_idx, hi_idx):
-    '''
-    var : str,
-    *_idx : int
-    '''
-    assert lo_idx % 64 == 0
-    assert hi_idx % 64 == 63
-    self.var = var
-    self.lo_idx = lo_idx
-    self.hi_idx = hi_idx
-
-  def get_lo_idx(self):
-    return self.lo_idx // 64
-
-  def get_hi_idx(self):
-    return (self.hi_idx + 1) // 64
-
-class IntegerSlice(Slice):
-  def __init__(self, var, lo_idx, hi_idx):
-    self.var = var
-    self.lo_idx = lo_idx
-    self.hi_idx = hi_idx
-    self.zero_extending = True
 
   def mark_sign_extend(self):
     self.zero_extending = False
@@ -162,20 +114,20 @@ class IntegerSlice(Slice):
     rhs : integer
     '''
     val = env.get_value(self.var)
+    bits = BitArray(uint=val.uint, length=val.length)
     bitwidth = env.get_type(self.var).bitwidth
     extend = zero_extend if self.zero_extending else sign_extend
     assert (self.lo_idx >= 0 and
         self.lo_idx < self.hi_idx and
         self.hi_idx < bitwidth)
-    val |= extend(rhs, bitwidth) << self.lo_idx
-    env.set_value(self.var, val)
+    bits[self.lo_idx:self.hi_idx+1] = extend(rhs, self.hi_idx-self.lo_idx+1)
+    new_val = Bits(uint=bits.uint, length=bits.length)
+    env.set_value(self.var, new_val)
 
   def get_value(self, env):
     bitwidth = self.hi_idx - self.lo_idx + 1
     total_bitwidth = env.get_type(self.var).bitwidth
-    val = env.get_value(self.var)
-    val <<= total_bitwidth - self.hi_idx + 1
-    val >>= (total_bitwidth - self.hi_idx + 1) + self.lo_idx
+    val = env.get_value(self.var)[self.lo_idx:self.hi_idx+1]
     # restrict the bitwidth
     val = Bits(uint=val.uint, length=bitwidth)
     return val
@@ -188,20 +140,26 @@ def get_value(v, env):
     return v.get_value(env)
   return v
 
-def binary_op(op):
+def binary_op(op, signed=True):
   def impl(a, b):
     bitwidth = a.length
     #return Bits(int=op(a.int, b.int), length=bitwidth)
-    return Bits(int=op(a.int, b.int), length=64)
+    if signed:
+      return Bits(int=op(a.int, b.int), length=64)
+    else:
+      return Bits(int=op(a.uint, b.uint), length=64)
   return impl
 
 def binary_shift(op):
   return lambda a, b: op(a, b.int)
 
-def unary_op(op):
+def unary_op(op, signed=True):
   def impl(a):
     bitwidth = a.length
-    return Bits(int=op(a.int), length=bitwidth)
+    if signed:
+      return Bits(int=op(a.int), length=bitwidth)
+    else:
+      return Bits(int=op(a.uint), length=bitwidth)
   return impl
 
 def binary_float_op(op):
@@ -210,29 +168,42 @@ def binary_float_op(op):
     return Bits(float=op(a.float,b.float), length=bitwidth)
   return impl
 
-# mappgin <op, is_float?> -> impl
+# mapping <op, is_float?> -> impl
 binary_op_impls = {
     ('+', True): binary_float_op(operator.add),
     ('-', True): binary_float_op(operator.sub),
     ('*', True): binary_float_op(operator.mul),
     ('/', True): binary_float_op(operator.truediv),
+    ('<', True): binary_float_op(operator.lt),
+    ('<=', True): binary_float_op(operator.le),
+    ('>', True): binary_float_op(operator.gt),
+    ('>=', True): binary_float_op(operator.ge),
+    ('!=', True): binary_op(operator.ne),
+    ('>>', True): binary_shift(operator.rshift),
+
+    ('AND', True): binary_op(operator.and_),
+    ('OR', True): binary_op(operator.or_, signed=False),
+    ('XOR', True): binary_op(operator.xor, signed=False),
+    ('==', True): binary_op(operator.eq),
 
     ('*', False): binary_op(operator.mul),
     ('+', False): binary_op(operator.add),
     ('-', False): binary_op(operator.sub),
     ('>', False): binary_op(operator.gt),
     ('<', False): binary_op(operator.gt),
+    ('%', False): binary_op(operator.imod),
     ('<<', False): binary_shift(operator.lshift),
     ('>>', False): binary_shift(operator.rshift),
-    ('AND', False): binary_op(operator.and_),
-    ('OR', False): binary_op(operator.or_),
-    ('XOR', False): binary_op(operator.xor),
+    ('AND', False): binary_op(operator.and_, signed=False),
+    ('OR', False): binary_op(operator.or_, signed=False),
+    ('XOR', False): binary_op(operator.xor, signed=False),
     ('==', False): binary_op(operator.eq),
     }
 
-# mappgin <op, is_float?> -> impl
+# mapping <op, is_float?> -> impl
 unary_op_impls = {
-    ('NOT', False): unary_op(operator.not_),
+    ('NOT', False): unary_op(operator.not_, signed=False),
+    ('NOT', True): unary_op(operator.not_, signed=False),
     }
 
 
@@ -240,6 +211,22 @@ def int_to_bits(x, bitwidth=32):
   if x < 0:
     return Bits(int=x, length=bitwidth)
   return Bits(uint=x, length=bitwidth)
+
+def float_to_bits(x, bitwidth=32):
+  return Bits(float=x, length=bitwidth)
+
+def float_vec_to_bits(vec, float_size=64):
+  bitwidth = len(vec) * float_size
+  bits = BitArray(uint=0, length=bitwidth)
+  for i, x in enumerate(vec):
+    bits[i*float_size:(i+1)*float_size] = float_to_bits(x, float_size)
+  return Bits(uint=bits.uint, length=bitwidth)
+
+def bits_to_float_vec(bits, float_size=64):
+  vec = []
+  for i in range(0, bits.length, float_size):
+    vec.append(bits[i:i+float_size].float)
+  return vec
 
 def get_signed_max(bitwidth):
   return (1<<(bitwidth-1))-1
@@ -282,12 +269,40 @@ def builtin_unary_func(op):
       return Bits(int=op(bits.int), length=ty.bitwidth), ty
 
     # float
-    return op(as_one(slice_or_val)), ty
+    return Bits(float=op(slice_or_val.float), length=ty.bitwidth), ty
   return impl
 
 def builtin_int_to_float(args, env):
   [(slice_or_val, ty)] = args
-  return slice_or_val.int, FloatType(32)
+  return Bits(float=slice_or_val.int, length=32), FloatType(32)
+
+def builtin_int_to_double(args, env):
+  [(slice_or_val, ty)] = args
+  return Bits(float=slice_or_val.int, length=64), FloatType(64)
+
+def builtin_float_to_int(args, env):
+  [(slice_or_val, ty)] = args
+  return Bits(int=int(slice_or_val.float+0.5), length=32), IntegerType(32)
+
+def builtin_float_to_long(args, env):
+  [(slice_or_val, ty)] = args
+  return Bits(int=int(slice_or_val.float+0.5), length=64), IntegerType(64)
+
+def builtin_float_to_int_trunc(args, env):
+  [(slice_or_val, ty)] = args
+  return Bits(int=int(slice_or_val.float), length=32), IntegerType(32)
+
+def builtin_float_to_long_trunc(args, env):
+  [(slice_or_val, ty)] = args
+  return Bits(int=int(slice_or_val.float), length=64), IntegerType(64)
+
+def builtin_double_to_float(args, env):
+  [(slice_or_val, ty)] = args
+  return Bits(int=int(slice_or_val.float), length=32), IntegerType(32)
+
+def builtin_float_to_double(args, env):
+  [(slice_or_val, ty)] = args
+  return Bits(int=int(slice_or_val.float), length=64), IntegerType(64)
 
 def builtin_binary_func(op):
   def impl(args, _):
@@ -297,7 +312,7 @@ def builtin_binary_func(op):
       return Bits(int=op(a.int, b.int), length=ty.bitwidth), ty
 
     # float
-    return op(as_one(a), as_one(b)), ty
+    return Bits(float=op(a.float, b.float), length=ty.bitwidth), ty
   return impl
 
 ignore = lambda args, env: args[0]
@@ -324,13 +339,27 @@ builtins = {
 
     'ZeroExtend': ignore,
     'SignExtend': ignore,
-    'ABS': builtin_unary_func(abs),
     'Convert_Int32_To_FP32': builtin_int_to_float,
     'Convert_Int64_To_FP32': builtin_int_to_float,
-    'SQRT': builtin_unary_func(math.sqrt),
+    'Convert_Int32_To_FP64': builtin_int_to_double,
+    'Convert_Int64_To_FP64': builtin_int_to_double,
+    'Convert_FP32_To_Int32': builtin_float_to_int,
+    'Convert_FP64_To_Int32': builtin_float_to_int,
+    'Convert_FP32_To_Int64': builtin_float_to_long,
+    'Convert_FP64_To_Int64': builtin_float_to_long,
+    'Convert_FP32_To_Int32_Truncate': builtin_float_to_int_trunc,
+    'Convert_FP64_To_Int32_Truncate': builtin_float_to_int_trunc,
+    'Convert_FP64_To_Int64_Truncate': builtin_float_to_long_trunc,
+    'Convert_FP64_To_FP32': builtin_double_to_float,
+    'Convert_FP32_To_FP64': builtin_float_to_double,
+
     'APPROXIMATE': ignore,
     'MIN': builtin_binary_func(min),
     'MAX': builtin_binary_func(max),
+    'ABS': builtin_unary_func(abs),
+    'SQRT': builtin_unary_func(math.sqrt),
+    'FLOOR': builtin_unary_func(math.floor),
+    'CEIL': builtin_unary_func(math.ceil),
     }
 
 def is_float(type):
@@ -338,6 +367,7 @@ def is_float(type):
 
 # TODO: handle integer overflow here
 def interpret_update(update, env):
+  print(update)
   rhs, rhs_type = interpret_expr(update.rhs, env)
 
   if (type(update.rhs) == Call and
@@ -367,7 +397,7 @@ def interpret_var(var, env):
   don't return a value but a slice/reference which can be update/deref later
   '''
   type = env.get_type(var.name)
-  slice = IntegerSlice(var.name, 0, type.bitwidth-1)
+  slice = Slice(var.name, 0, type.bitwidth-1)
   return slice, type
 
 def is_number(expr):
@@ -376,16 +406,26 @@ def is_number(expr):
 def interpret_binary_expr(expr, env):
   a, a_type = evaluate_expr(expr.a, env)
   b, b_type = evaluate_expr(expr.b, env)
-  assert a_type == b_type or is_number(expr.a) or is_number(expr.b) or expr.op in ('<<', '>>')
+  # automatically change bit widths 
+
+  # TODO: make sure this crap is correct
+  if a_type.bitwidth < 16:
+    a = sign_extend(a, 16)
+    a_type = a_type._replace(bitwidth=16)
+  if b_type.bitwidth < 16:
+    b = sign_extend(b, 16)
+    b_type = b_type._replace(bitwidth=16)
+  #assert a_type == b_type or is_number(expr.a) or is_number(expr.b) or expr.op in ('<<', '>>')
+
   impl_sig = expr.op, is_float(a_type)
   impl = binary_op_impls[impl_sig]
-  return impl(as_one(a), as_one(b)), a_type
+  return impl(a, b), a_type
 
 def interpret_unary_expr(expr, env):
   a, a_type = evaluate_expr(expr.a, env)
   impl_sig = expr.op, is_float(a_type)
   impl = unary_op_impls[impl_sig]
-  return impl(as_one(a)), a_type
+  return impl(a), a_type
 
 def interpret_for(for_stmt, env):
   iterator = for_stmt.iterator
@@ -403,6 +443,7 @@ def interpret_for(for_stmt, env):
       interpret_stmt(stmt, env)
     new_iterator_value = update_iterator(env.get_value(iterator))
     env.set_value(iterator, new_iterator_value)
+  env.undef(iterator)
 
 def interpret_if(if_stmt, env):
   cond, _ = evaluate_expr(if_stmt.cond, env)
@@ -452,7 +493,7 @@ def interpret_bit_slice(bit_slice, env):
 
   # adjust bitwidth in case the variable is implicitly defined
   # allow integer slice to have implicitly declared bitwidth
-  if type(slice_src) == IntegerSlice:
+  if not is_float(ty):
     bitwidth = max(ty.bitwidth, hi.int+1)
     env.set_type(slice_src.var, IntegerType(bitwidth))
     val = env.get_value(slice_src.var)
@@ -498,7 +539,7 @@ def interpret_call(call, env):
     else:
       assert type(param) == Var
       param_name = param.name
-      param_width = arg
+      param_width = arg.length
       assert arg_type.bitwidth == param_width
     new_env.define(param_name, arg_type, arg)
 
@@ -512,8 +553,11 @@ def interpret_call(call, env):
 
 def interpret_number(n, _):
   if type(n.val) == int:
-     return int_to_bits(n.val), IntegerType(32)
-  return n.val, DoubleType(64)
+    try:
+      return int_to_bits(n.val), IntegerType(32)
+    except CreationError:
+      return int_to_bits(n.val, 64), IntegerType(64)
+  return float_to_bits(n.val), FloatType(32)
 
 def interpret_func_def(func_def, env):
   env.define(func_def.name, type=None, value=func_def)
@@ -565,6 +609,10 @@ def interpret(spec, args=None):
   env.define('dst', type=concrete_types[spec.rettype])
 
   for stmt in spec.spec:
+    if type(stmt) == Return:
+      assign_to_dst = Update(lhs=Var('dst'), rhs=stmt.val, modifier=None)
+      interpret_stmt(assign_to_dst, env)
+      break
     interpret_stmt(stmt, env)
 
   return env.get_value('dst')
@@ -592,13 +640,15 @@ ENDFOR
         <header>emmintrin.h</header>
 </intrinsic>
   '''
+
   intrin_node = ET.fromstring(sema)
   spec = get_spec_from_xml(intrin_node)
+  eager_map = lambda f, xs: list(map(f, xs))
   a = [1,2]
   b = [1,2]
-  c = interpret(spec, [a, b])
-  print(c)
-  c = interpret(spec, [[4,5], [7,8]])
-  print(c)
-  c = interpret(spec, [[2,3], [4,9]])
-  print(c)
+  c = interpret(spec, eager_map(float_vec_to_bits, [a, b]))
+  print(bits_to_float_vec(c))
+  c = interpret(spec, eager_map(float_vec_to_bits, [[4,5], [7,8]]))
+  print(bits_to_float_vec(c))
+  c = interpret(spec, eager_map(float_vec_to_bits, [[2,3], [4,9]]))
+  print(bits_to_float_vec(c))
