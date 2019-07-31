@@ -91,10 +91,13 @@ class Environment:
     type = self.get_type(name)
     self.vars[name] = type, value
 
-
 class Slice:
   def __init__(self, var, lo_idx, hi_idx):
+    self.reversed = False
     self.var = var
+    if lo_idx >= hi_idx:
+      self.reversed = True
+      lo_idx, hi_idx = hi_idx, lo_idx
     self.lo_idx = lo_idx
     self.hi_idx = hi_idx
     self.zero_extending = True
@@ -113,6 +116,7 @@ class Slice:
     '''
     rhs : integer
     '''
+    assert self.reversed == False
     val = env.get_value(self.var)
     bits = BitArray(uint=val.uint, length=val.length)
     bitwidth = env.get_type(self.var).bitwidth
@@ -128,6 +132,8 @@ class Slice:
     bitwidth = self.hi_idx - self.lo_idx + 1
     total_bitwidth = env.get_type(self.var).bitwidth
     val = env.get_value(self.var)[self.lo_idx:self.hi_idx+1]
+    if self.reversed:
+      val = val[::-1]
     # restrict the bitwidth
     val = Bits(uint=val.uint, length=bitwidth)
     return val
@@ -367,7 +373,6 @@ def is_float(type):
 
 # TODO: handle integer overflow here
 def interpret_update(update, env):
-  print(update)
   rhs, rhs_type = interpret_expr(update.rhs, env)
 
   if (type(update.rhs) == Call and
