@@ -19,22 +19,56 @@ for intrin in data_root.iter('intrinsic'):
   if inst is None:
     continue
   inst_form = inst.attrib['name'], inst.attrib.get('form')
-  if not (intrin.attrib['name'].startswith('_mm') or
-      intrin.attrib['name'].startswith('_mm')):
-    continue
+  cpuid_text = 'Unknown'
+  if cpuid is not None:
+    if cpuid.text in ('AES', 'SHA', 'MPX', 'KNCNI', 
+        'AVX512_4FMAPS', 'AVX512_BF16',
+        'INVPCID', 'RTM', 'XSAVE', 
+        'FSGSBASE', 'RDRAND', 'RDSEED'):
+      continue
+    cpuid_text = cpuid.text
+  #if not intrin.attrib['name'].startswith('_mm'):
+  #  continue
   if (intrin.attrib['name'].endswith('getcsr') or
       intrin.attrib['name'].endswith('setcsr') or
-      'ord' in intrin.attrib['name']):
+      '_cmp_' in intrin.attrib['name'] or
+      'zeroall' in intrin.attrib['name'] or
+      'zeroupper' in intrin.attrib['name'] or
+      intrin.attrib['name'] == '_mm_sha1rnds4_epu32' or
+      'mant' in intrin.attrib['name'] or
+      'ord' in intrin.attrib['name'] or
+      '4dpwss' in intrin.attrib['name'] or
+      intrin.attrib['name'] in ('_rdpmc', '_rdtsc')):
     continue
-  if sema is not None and ('MEM' in sema.text or 'FP16' in sema.text):
+  cat = intrin.find('category')
+  if cat is not None and cat.text in (
+      'Elementary Math Functions', 
+      'General Support',
+      'Load', 'Store'):
+    continue
+  if sema is not None and (
+      'MEM' in sema.text or
+      'FP16' in sema.text or
+      'Float16' in sema.text or
+      'MOD2' in sema.text or
+      'affine_inverse_byte' in sema.text or
+      'ShiftRows' in sema.text or
+      'MANTISSA' in sema.text or
+      'ConvertExpFP' in sema.text or
+      '<<<' in sema.text or
+      ' MXCSR ' in sema.text or
+      'ZF' in sema.text or
+      'NaN' in sema.text or 
+      'CheckFPClass' in sema.text or
+      'ROUND' in sema.text or
+      'carry_out' in sema.text or
+      'SSP' in sema.text):
     continue
   if 'str' in intrin.attrib['name']:
     if inst is not None:
       skipped_insts.add(inst_form)
     num_skipped += 1
     continue
-  #if cpuid is not None and cpuid.text in ('MPX', 'KNCNI'):
-  #  continue
 
   if 'fixup' in intrin.attrib['name']:
     if inst is not None:
@@ -52,7 +86,7 @@ for intrin in data_root.iter('intrinsic'):
     num_skipped += 1
     continue
 
-  print(intrin.attrib['name'])
+  print(intrin.attrib['name'], cpuid_text)
   if inst is not None and sema is not None:
     try:
       #if 'ELSE IF' in sema.text:

@@ -55,7 +55,7 @@ def p_return(p):
 
 def p_expr_assign(p):
   'expr : expr UPDATE expr'
-  p[0] = Update(p[1], p[3], None)
+  p[0] = Update(p[1], p[3])
 
 def p_expr_assign_op(p):
   'expr : OP UPDATE ID'
@@ -63,11 +63,11 @@ def p_expr_assign_op(p):
 
 def p_expr_plus_equal(p):
   'expr : expr PLUS_EQUAL expr'
-  p[0] = Update(p[1], p[3], '+')
+  p[0] = Update(p[1], BinaryExpr(op='+', a=p[1], b=p[3]))
 
 def p_expr_or_equal(p):
   'expr : expr OR_EQUAL expr'
-  p[0] = Update(p[1], p[3], '|')
+  p[0] = Update(p[1], BinaryExpr(op='|', a=p[1], b=p[3]))
 
 def p_stmt_while(p):
   'stmt : DO WHILE expr stmts OD'
@@ -132,9 +132,7 @@ def p_args(p):
 
 def p_expr_bit_index(p):
   'expr : expr LBRACE expr RBRACE'
-  lo = p[3]
-  hi = BinaryExpr('+', a=lo, b=Number(1))
-  p[0] = BitSlice(p[1], lo=lo, hi=hi)
+  p[0] = BitSlice(p[1], lo=p[3], hi=p[3])
 
 def p_expr_bit_slice(p):
   'expr : expr LBRACE expr COLON expr RBRACE'

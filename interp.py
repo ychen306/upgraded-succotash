@@ -12,22 +12,31 @@ FloatType = lambda bw: ConcreteType(bw, True, False, False)
 DoubleType = lambda bw: ConcreteType(bw, False, True, False)
 PointerType = lambda ty: ty._replace(is_pointer=True)
 
+max_vl = 512
+
 # convert textual types like '_m512i' to ConcreteType
 concrete_types = {
-    '__m512i': IntegerType(512),
-    '__m256i': IntegerType(256),
-    '__m128i': IntegerType(128),
+    '_m512i': IntegerType(max(max_vl, 512)), # typo in the manual
+    '__m512i': IntegerType(max(max_vl, 512)),
+    '__m256i': IntegerType(max(max_vl, 256)),
+    '__m128i': IntegerType(max(max_vl, 128)),
     '__m64': IntegerType(64),
 
     # single precision floats
-    '__m512': FloatType(512),
-    '__m256': FloatType(256),
-    '__m128': FloatType(128),
+    '__m512': FloatType(max(max_vl, 512)),
+    '__m256': FloatType(max(max_vl, 256)),
+    '__m128': FloatType(max(max_vl, 128)),
+    '_m512': FloatType(max(max_vl, 512)),
+    '_m256': FloatType(max(max_vl, 256)),
+    '_m128': FloatType(max(max_vl, 128)),
 
     # double precision floats
-    '__m512d': DoubleType(512),
-    '__m256d': DoubleType(256),
-    '__m128d': DoubleType(128),
+    '__m512d': DoubleType(max(max_vl, 512)),
+    '__m256d': DoubleType(max(max_vl, 256)),
+    '__m128d': DoubleType(max(max_vl, 128)),
+    '_m512d': DoubleType(max(max_vl, 512)),
+    '_m256d': DoubleType(max(max_vl, 256)),
+    '_m128d': DoubleType(max(max_vl, 128)),
 
     # masks
     '__mmask8': IntegerType(8),
@@ -38,20 +47,28 @@ concrete_types = {
     'float': FloatType(32),
     'double': FloatType(64),
     'int': IntegerType(32),
+    'char': IntegerType(8),
+    'short': IntegerType(16),
+    'unsigned short': IntegerType(16),
     'const int': IntegerType(32),
     'uint': IntegerType(32),
     'unsigned int': IntegerType(32),
     'unsigned char': IntegerType(8),
+    'unsigned long': IntegerType(64),
     '__int64': IntegerType(64),
+    '__int32': IntegerType(32),
+    'unsigned __int32': IntegerType(32),
+    'unsigned __int64': IntegerType(64),
+    '_MM_PERM_ENUM': IntegerType(8),
     }
 
 def get_default_value(type):
   if type.is_float:
     num_elems = type.bitwidth // 32
-    return float_vec_to_bits([1] * num_elems, float_size=32)
+    return float_vec_to_bits([.1] * num_elems, float_size=32)
   elif type.is_double:
     num_elems = type.bitwidth // 64
-    return float_vec_to_bits([1] * num_elems, float_size=64)
+    return float_vec_to_bits([.1] * num_elems, float_size=64)
   return Bits(type.bitwidth)
 
 def as_many(val):
@@ -60,8 +77,20 @@ def as_many(val):
   return [val]
 
 class Environment:
-  def __init__(self):
+  def __init__(self, func_defs=None):
     self.vars = {}
+    if func_defs is None:
+      func_defs = {}
+    self.func_defs = func_defs
+
+  def new_env(self):
+    return Environment(self.func_defs)
+
+  def def_func(self, func, func_def):
+    self.func_defs[func] = func_def
+
+  def get_func(self, func):
+    return self.func_defs[func]
 
   def define(self, name, type, value=None):
     assert name not in self.vars
@@ -92,19 +121,20 @@ class Environment:
     self.vars[name] = type, value
 
 class Slice:
-  def __init__(self, var, lo_idx, hi_idx):
-    self.reversed = False
+  def __init__(self, var, lo_idx, hi_idx, stride=1):
     self.var = var
-    if lo_idx >= hi_idx:
-      self.reversed = True
-      lo_idx, hi_idx = hi_idx, lo_idx
     self.lo_idx = lo_idx
     self.hi_idx = hi_idx
     self.zero_extending = True
+    self.stride = stride
+
+  def set_stride(self, stride):
+    return Slice(self.var, self.lo_idx, self.hi_idx, stride)
 
   def slice(self, lo, hi):
-    new_slice = self.__class__(self.var, lo+self.lo_idx, hi+self.lo_idx)
-    return new_slice
+    lo = lo * self.stride
+    hi = (hi+1) * self.stride - 1
+    return Slice(self.var, lo+self.lo_idx, hi+self.lo_idx, self.stride)
 
   def __repr__(self):
     return '%s[%d:%d]' % (self.var, self.lo_idx, self.hi_idx)
@@ -116,24 +146,35 @@ class Slice:
     '''
     rhs : integer
     '''
-    assert self.reversed == False
-    val = env.get_value(self.var)
-    bits = BitArray(uint=val.uint, length=val.length)
+    if self.lo_idx > self.hi_idx:
+      return
+
+    if rhs == None: # undefined
+      return
+
+    update_width = self.hi_idx - self.lo_idx + 1
+    if update_width < rhs.length:
+      # trunc rhs
+      rhs = slice_bits(rhs, 0, update_width)
+
+    old_val = env.get_value(self.var)
+    old_bits = BitArray(uint=old_val.uint, length=old_val.length)
     bitwidth = env.get_type(self.var).bitwidth
     extend = zero_extend if self.zero_extending else sign_extend
     assert (self.lo_idx >= 0 and
-        self.lo_idx < self.hi_idx and
+        self.lo_idx <= self.hi_idx and
         self.hi_idx < bitwidth)
-    bits[self.lo_idx:self.hi_idx+1] = extend(rhs, self.hi_idx-self.lo_idx+1)
-    new_val = Bits(uint=bits.uint, length=bits.length)
+    update_bits(old_bits, self.lo_idx, self.hi_idx+1, extend(rhs, self.hi_idx-self.lo_idx+1))
+    new_val = Bits(uint=old_bits.uint, length=old_bits.length)
     env.set_value(self.var, new_val)
 
   def get_value(self, env):
     bitwidth = self.hi_idx - self.lo_idx + 1
     total_bitwidth = env.get_type(self.var).bitwidth
-    val = env.get_value(self.var)[self.lo_idx:self.hi_idx+1]
-    if self.reversed:
-      val = val[::-1]
+    assert (self.lo_idx >= 0 and
+        self.lo_idx <= self.hi_idx and
+        self.hi_idx < total_bitwidth)
+    val = slice_bits(env.get_value(self.var), self.lo_idx, self.hi_idx+1)
     # restrict the bitwidth
     val = Bits(uint=val.uint, length=bitwidth)
     return val
@@ -146,14 +187,14 @@ def get_value(v, env):
     return v.get_value(env)
   return v
 
-def binary_op(op, signed=True):
+def binary_op(op, signed=True, get_bitwidth=lambda a, b: a.length):
   def impl(a, b):
-    bitwidth = a.length
+    bitwidth = get_bitwidth(a, b)
     #return Bits(int=op(a.int, b.int), length=bitwidth)
     if signed:
-      return Bits(int=op(a.int, b.int), length=64)
+      return Bits(int=op(a.int, b.int), length=bitwidth)
     else:
-      return Bits(int=op(a.uint, b.uint), length=64)
+      return Bits(uint=op(a.uint, b.uint), length=bitwidth)
   return impl
 
 def binary_shift(op):
@@ -165,7 +206,13 @@ def unary_op(op, signed=True):
     if signed:
       return Bits(int=op(a.int), length=bitwidth)
     else:
-      return Bits(int=op(a.uint), length=bitwidth)
+      return Bits(uint=op(a.uint), length=bitwidth)
+  return impl
+
+def unary_float_op(op):
+  def impl(a):
+    bitwidth = a.length
+    return Bits(float=op(a.float), length=bitwidth)
   return impl
 
 def binary_float_op(op):
@@ -173,6 +220,25 @@ def binary_float_op(op):
     bitwidth = a.length
     return Bits(float=op(a.float,b.float), length=bitwidth)
   return impl
+
+def rol(bits, a):
+  bit_array = BitArray(uint=bits.uint, length=bits.length)
+  bit_array.rol(a)
+  return BitArray(uint=bit_array.uint, length=bits.length)
+
+# this is to deal with the facts that in bitstring, 
+# b[0] actually means the HIGHEST ORDER BIT!!!
+# DONT TRY TO UPDATE THINGS FROM BITSTRING DIRECTLY
+def slice_bits(bits, lo, hi):
+  lo, hi = bits.length - hi, bits.length - lo
+  return bits[lo:hi]
+
+def update_bits(bits, lo, hi, val):
+  lo, hi = bits.length - hi, bits.length - lo
+  bits[lo:hi] = val
+
+get_max_arg_width = lambda a, b: max(a.length, b.length)
+get_total_arg_width = lambda a, b: a.length + b.length
 
 # mapping <op, is_float?> -> impl
 binary_op_impls = {
@@ -186,32 +252,44 @@ binary_op_impls = {
     ('>=', True): binary_float_op(operator.ge),
     ('!=', True): binary_op(operator.ne),
     ('>>', True): binary_shift(operator.rshift),
+    #('<<', True): binary_shift(operator.lshift),
+    ('<<', True): binary_op(operator.lshift, signed=False),
 
-    ('AND', True): binary_op(operator.and_),
-    ('OR', True): binary_op(operator.or_, signed=False),
+    ('AND', True): binary_op(operator.and_, signed=False),
+    ('OR', True): binary_op(operator.or_, signed=False, get_bitwidth=get_max_arg_width),
     ('XOR', True): binary_op(operator.xor, signed=False),
-    ('==', True): binary_op(operator.eq),
 
-    ('*', False): binary_op(operator.mul),
-    ('+', False): binary_op(operator.add),
+    # FIXME: what about the signednes?????
+    ('*', False): binary_op(operator.mul, get_bitwidth=get_total_arg_width, signed=False),
+    ('+', False): binary_op(operator.add, get_bitwidth=get_total_arg_width, signed=False),
     ('-', False): binary_op(operator.sub),
     ('>', False): binary_op(operator.gt),
+    ('>=', False): binary_op(operator.ge),
     ('<', False): binary_op(operator.gt),
+    ('<=', False): binary_op(operator.le),
     ('%', False): binary_op(operator.imod),
     ('<<', False): binary_shift(operator.lshift),
+    ('<<<', False): binary_shift(rol), # is this correct??
     ('>>', False): binary_shift(operator.rshift),
+
     ('AND', False): binary_op(operator.and_, signed=False),
-    ('OR', False): binary_op(operator.or_, signed=False),
+    ('&', False): binary_op(operator.and_, signed=False),
+    ('|', False): binary_op(operator.or_, signed=False, get_bitwidth=get_max_arg_width),
+    ('OR', False): binary_op(operator.or_, signed=False, get_bitwidth=get_max_arg_width),
     ('XOR', False): binary_op(operator.xor, signed=False),
-    ('==', False): binary_op(operator.eq),
+
+    ('!=', False): binary_op(operator.ne),
     }
 
 # mapping <op, is_float?> -> impl
 unary_op_impls = {
-    ('NOT', False): unary_op(operator.not_, signed=False),
     ('NOT', True): unary_op(operator.not_, signed=False),
-    }
+    ('-', True): unary_float_op(operator.neg),
 
+    ('NOT', False): unary_op(operator.not_, signed=False),
+    ('-', False): unary_op(operator.neg),
+    ('~', False): unary_op(lambda x: ~x),
+    }
 
 def int_to_bits(x, bitwidth=32):
   if x < 0:
@@ -225,13 +303,13 @@ def float_vec_to_bits(vec, float_size=64):
   bitwidth = len(vec) * float_size
   bits = BitArray(uint=0, length=bitwidth)
   for i, x in enumerate(vec):
-    bits[i*float_size:(i+1)*float_size] = float_to_bits(x, float_size)
+    update_bits(bits, i*float_size, (i+1)*float_size, float_to_bits(x, float_size))
   return Bits(uint=bits.uint, length=bitwidth)
 
 def bits_to_float_vec(bits, float_size=64):
   vec = []
   for i in range(0, bits.length, float_size):
-    vec.append(bits[i:i+float_size].float)
+    vec.append(slice_bits(bits, i, i+float_size).float)
   return vec
 
 def get_signed_max(bitwidth):
@@ -278,9 +356,12 @@ def builtin_unary_func(op):
     return Bits(float=op(slice_or_val.float), length=ty.bitwidth), ty
   return impl
 
-def builtin_int_to_float(args, env):
-  [(slice_or_val, ty)] = args
-  return Bits(float=slice_or_val.int, length=32), FloatType(32)
+def builtin_int_to_float(signed=True, bitwidth=32):
+  def impl(args, env):
+    [(slice_or_val, ty)] = args
+    val = slice_or_val.int if signed else slice_or_val.uint
+    return Bits(float=val, length=bitwidth), FloatType(bitwidth)
+  return impl
 
 def builtin_int_to_double(args, env):
   [(slice_or_val, ty)] = args
@@ -321,6 +402,28 @@ def builtin_binary_func(op):
     return Bits(float=op(a.float, b.float), length=ty.bitwidth), ty
   return impl
 
+def builtin_concat(args, _):
+  [(a, a_ty), (b, b_ty)] = args
+  assert not is_float(a_ty) and not is_float(b_ty)
+  return a + b, IntegerType(a_ty.bitwidth+b_ty.bitwidth)
+
+def builtin_popcount(args, _):
+  [(a, _)] = args
+  return Bits(int=a.bin.count('1'), length=32), IntegerType(32)
+
+def builtin_select(args, _):
+  '''
+  select dword (32-bit) in a[...] by b
+  '''
+  [(a, a_ty), (b, _)] = args
+  bit_idx = b.uint * 32
+  selected = slice_bits(a, bit_idx, bit_idx+32).uint
+  return Bits(uint=selected, length=32), a_ty._replace(bitwidth=32)
+
+def builtin_zero_extend_to_512(args, _):
+  [(a, a_ty)] = args
+  return zero_extend(a, 512), a_ty._replace(bitwidth=512)
+
 ignore = lambda args, env: args[0]
 
 builtins = {
@@ -342,11 +445,21 @@ builtins = {
     'Saturate_UnsignedInt64_To_Int16': gen_saturation_func(16, False, True),
     'Saturate_UnsignedInt64_To_Int32': gen_saturation_func(32, False, True),
     'Saturate_UnsignedInt64_To_Int8': gen_saturation_func(8, False, True),
+    'SIGNED_DWORD_SATURATE': gen_saturation_func(32, True, True),
+    'Truncate_Int32_To_Int8': gen_saturation_func(8, True, True),
+    'Truncate_Int64_To_Int8': gen_saturation_func(8, True, True),
+    'Truncate_Int32_To_Int16': gen_saturation_func(16, True, True),
+    'Truncate_Int64_To_Int32': gen_saturation_func(32, True, True),
+    'Truncate_Int64_To_Int16': gen_saturation_func(32, True, True),
+    'Truncate_Int16_To_Int8': gen_saturation_func(8, True, True),
 
+    # FIXME: do this here rather than "lookahead" interpret_update
     'ZeroExtend': ignore,
     'SignExtend': ignore,
-    'Convert_Int32_To_FP32': builtin_int_to_float,
-    'Convert_Int64_To_FP32': builtin_int_to_float,
+    'ZeroExtend64': ignore,
+    'ZeroExtend_To_512': builtin_zero_extend_to_512,
+    'Convert_Int32_To_FP32': builtin_int_to_float(signed=True, bitwidth=32),
+    'Convert_Int64_To_FP32': builtin_int_to_float(signed=True, bitwidth=32),
     'Convert_Int32_To_FP64': builtin_int_to_double,
     'Convert_Int64_To_FP64': builtin_int_to_double,
     'Convert_FP32_To_Int32': builtin_float_to_int,
@@ -358,6 +471,27 @@ builtins = {
     'Convert_FP64_To_Int64_Truncate': builtin_float_to_long_trunc,
     'Convert_FP64_To_FP32': builtin_double_to_float,
     'Convert_FP32_To_FP64': builtin_float_to_double,
+    'Float64ToFloat32': builtin_double_to_float,
+    'Float32ToFloat64': builtin_float_to_double,
+    'Convert_FP64_To_UnsignedInt32': builtin_float_to_int,
+    'Convert_FP32_To_UnsignedInt32': builtin_float_to_int,
+    'Convert_FP64_To_UnsignedInt64': builtin_float_to_long,
+    'Convert_FP32_To_UnsignedInt64': builtin_float_to_long,
+    'Convert_FP64_To_UnsignedInt32_Truncate': builtin_float_to_int_trunc,
+    'Convert_FP32_To_UnsignedInt32_Truncate': builtin_float_to_int_trunc,
+    'Convert_FP64_To_UnsignedInt64_Truncate': builtin_float_to_long_trunc,
+    'Convert_FP32_To_Int64_Truncate': builtin_float_to_long_trunc,
+    'Convert_FP32_To_UnsignedInt64_Truncate': builtin_float_to_long_trunc,
+    'ConvertUnsignedIntegerTo_FP64': builtin_int_to_float(signed=False, bitwidth=64),
+    'ConvertUnsignedInt32_To_FP32': builtin_int_to_float(signed=False, bitwidth=32),
+    'Convert_UnsignedInt32_To_FP64': builtin_int_to_float(signed=False, bitwidth=64),
+    'Convert_UnsignedInt64_To_FP64': builtin_int_to_float(signed=False, bitwidth=64),
+    'Convert_UnsignedInt32_To_FP32': builtin_int_to_float(signed=False, bitwidth=32),
+    'Convert_UnsignedInt64_To_FP32': builtin_int_to_float(signed=False, bitwidth=32),
+    'ConvertUnsignedInt64_To_FP64': builtin_int_to_float(signed=False, bitwidth=64),
+    'ConvertUnsignedInt64_To_FP32': builtin_int_to_float(signed=False, bitwidth=32),
+    'Int32ToFloat64': builtin_int_to_float(signed=True, bitwidth=64),
+    'UInt32ToFloat64': builtin_int_to_float(signed=False, bitwidth=64),
 
     'APPROXIMATE': ignore,
     'MIN': builtin_binary_func(min),
@@ -366,6 +500,12 @@ builtins = {
     'SQRT': builtin_unary_func(math.sqrt),
     'FLOOR': builtin_unary_func(math.floor),
     'CEIL': builtin_unary_func(math.ceil),
+    'PopCount': builtin_popcount,
+    'POPCNT': builtin_popcount,
+    'select': builtin_select,
+
+    # bitstring has overloaded plus for concatenation
+    'concat': builtin_concat,
     }
 
 def is_float(type):
@@ -391,16 +531,16 @@ def interpret_update(update, env):
   if sign_extending:
     lhs.mark_sign_extend()
 
-  if update.modifier is None:
-    rhs_val = get_value(rhs, env)
-    lhs.update(rhs_val, env)
-    return rhs_val
-  unreachable()
+  rhs_val = get_value(rhs, env)
+  lhs.update(rhs_val, env)
+  return rhs_val
 
 def interpret_var(var, env):
   '''
-  don't return a value but a slice/reference which can be update/deref later
+  return a slice/reference, which can be update/deref later
   '''
+  if var.name == 'undefined':
+    return None, None
   type = env.get_type(var.name)
   slice = Slice(var.name, 0, type.bitwidth-1)
   return slice, type
@@ -408,11 +548,37 @@ def interpret_var(var, env):
 def is_number(expr):
   return type(expr) == Number
 
-def interpret_binary_expr(expr, env):
-  a, a_type = evaluate_expr(expr.a, env)
-  b, b_type = evaluate_expr(expr.b, env)
-  # automatically change bit widths 
+def collect_chained_cmpeq(expr, chained):
+  if type(expr) != BinaryExpr or expr.op != '==':
+    chained.append(expr)
+    return
+  
+  collect_chained_cmpeq(expr.a, chained)
+  collect_chained_cmpeq(expr.b, chained)
 
+def interpret_binary_expr(expr, env):
+  # special case for expression like "a == b == c == d"
+  if expr.op == '==':
+    chained_operands = []
+    collect_chained_cmpeq(expr, chained_operands)
+    vals = [evaluate_expr(operand, env) for operand in chained_operands]
+    v, _ = vals[0]
+    equal = True
+    for v2, _ in vals[1:]:
+      if v2.uint != v.uint:
+        equal = False
+        break
+    return Bits(uint=equal, length=1), IntegerType(1)
+
+  a, a_type = evaluate_expr(expr.a, env)
+  # special case for expressions that can be short-cirtuited
+  if expr.op == 'AND':
+    if not(a.int):
+      return Bits(int=0, length=32), IntegerType(32)
+
+  b, b_type = evaluate_expr(expr.b, env)
+
+  # automatically change bit widths 
   # TODO: make sure this crap is correct
   if a_type.bitwidth < 16:
     a = sign_extend(a, 16)
@@ -432,16 +598,25 @@ def interpret_unary_expr(expr, env):
   impl = unary_op_impls[impl_sig]
   return impl(a), a_type
 
+def interpret_while(while_stmt, env):
+  def keep_going():
+    cond, _ = evaluate_expr(while_stmt.cond, env)
+    return cond.int
+
+  while keep_going():
+    for stmt in while_stmt.body:
+      interpret_stmt(stmt, env)
+
 def interpret_for(for_stmt, env):
   iterator = for_stmt.iterator
-  begin, _ = interpret_expr(for_stmt.begin, env)
-  end, _ = interpret_expr(for_stmt.end, env)
+  begin, _ = evaluate_expr(for_stmt.begin, env)
+  end, _ = evaluate_expr(for_stmt.end, env)
   inc = lambda v: int_to_bits(v.int+1)
   dec = lambda v: int_to_bits(v.int-1)
   cont_inc = lambda : env.get_value(iterator).int <= end.int
   cont_dec = lambda : env.get_value(iterator).int >= end.int
   update_iterator = inc if for_stmt.inc else dec
-  cont = cont_inc if for_stmt.inc else done_dec
+  cont = cont_inc if for_stmt.inc else cont_dec
   env.define(iterator, IntegerType(32), value=get_value(begin, env))
   while cont():
     for stmt in for_stmt.body:
@@ -467,8 +642,7 @@ def interpret_bit_slice(bit_slice, env):
   # special case for the magic variable 'MAX' 
   if (type(bit_slice.hi) == Var and
       bit_slice.hi.name == 'MAX'):
-    _, ty = interpret_expr(bit_slice.bv, env)
-    hi = int_to_bits(ty.bitwidth-1)
+    hi = int_to_bits(max_vl-1)
   else:
     hi, _ = evaluate_expr(bit_slice.hi, env)
 
@@ -476,13 +650,15 @@ def interpret_bit_slice(bit_slice, env):
   # assume only integers can be implicitly declared
   if (type(bit_slice.bv) == Var and
       not env.has(bit_slice.bv.name)):
-    env.define(bit_slice.bv.name, type=IntegerType(hi.int+1))
+    env.define(bit_slice.bv.name, type=IntegerType(hi.uint+1))
   slice_src, ty = interpret_expr(bit_slice.bv, env)
   assert (isinstance(slice_src, Slice) or
       isinstance(slice_src, Bits))
 
   # compute update type with new bitwidth
-  slice_width = hi.int - lo.int + 1
+  slice_width = hi.uint - lo.uint + 1
+  if type(slice_src) == Slice:
+    slice_width *= slice_src.stride
   if ty.is_float:
     new_type = FloatType(slice_width)
   elif ty.is_double:
@@ -493,18 +669,19 @@ def interpret_bit_slice(bit_slice, env):
   # in case the bits we are slicing from
   # is a result of a computation, not a variable
   if type(slice_src) == Bits:
-    sliced = slice_src[lo.int:hi.int]
+    sliced = slice_bits(slice_src, lo.uint, hi.uint+1)
     return Bits(uint=sliced.uint, length=slice_width), new_type
 
   # adjust bitwidth in case the variable is implicitly defined
   # allow integer slice to have implicitly declared bitwidth
   if not is_float(ty):
-    bitwidth = max(ty.bitwidth, hi.int+1)
+    bitwidth = max(env.get_type(slice_src.var).bitwidth, hi.uint+1)
     env.set_type(slice_src.var, IntegerType(bitwidth))
     val = env.get_value(slice_src.var)
-    env.set_value(slice_src.var, zero_extend(val, bitwidth))
+    new_val = zero_extend(val, bitwidth)
+    env.set_value(slice_src.var, new_val)
 
-  return slice_src.slice(lo.int, hi.int), new_type
+  return slice_src.slice(lo.uint, hi.uint), new_type
 
 def interpret_match(match_stmt, env):
   val, _ = evaluate_expr(match_stmt.val, env)
@@ -521,18 +698,24 @@ def interpret_match(match_stmt, env):
 
 def interpret_call(call, env):
   assert type(call.func) == str
+
+  # compute all the arguments
   args = [evaluate_expr(arg, env) for arg in call.args]
+
+  # calling a builtin
   if call.func in builtins:
     # assume builtins don't modify the environment
     return builtins[call.func](args, env)
 
   # assume there is no indirect calls
-  func_def = env.get_value(call.func)
+  func_def = env.get_func(call.func)
 
   # Calling a user defined function
-  new_env = Environment()
+  # Pass the arguments first
+  new_env = env.new_env()
   assert len(func_def.params) == len(args)
   for (arg, arg_type), param in zip(args, func_def.params):
+    # make sure the argument bitwidths match 
     if type(param) == BitSlice:
       assert type(param.bv) == Var
       assert is_number(param.lo)
@@ -548,10 +731,11 @@ def interpret_call(call, env):
       assert arg_type.bitwidth == param_width
     new_env.define(param_name, arg_type, arg)
 
+  # step over the function
   for stmt in func_def.body:
     if type(stmt) == Return:
-      return evaluate_expr(stmt.val, env)
-    interpret_stmt(stmt, env)
+      return evaluate_expr(stmt.val, new_env)
+    interpret_stmt(stmt, new_env)
 
   # user defined function should return explicitly
   unreachable()
@@ -565,10 +749,38 @@ def interpret_number(n, _):
   return float_to_bits(n.val), FloatType(32)
 
 def interpret_func_def(func_def, env):
-  env.define(func_def.name, type=None, value=func_def)
+  env.def_func(func_def.name, func_def)
+
+def interpret_lookup(lookup, env):
+  '''
+  essentially these expression returns a slice
+  whose stride is specified by the property,
+  which by defualt is `bit'.
+
+  Some examples:
+
+  a[127:0] is a slice of bits from 0 to 127
+  a.byte[0] is a slice of bits from 0 to 7
+  a.dword[0].bit[2] is ...
+  '''
+  if (type(lookup.obj) == Var and
+      not env.has(lookup.obj.name)):
+    # implicitly defined obj, we will refine the bitwidth later
+    env.define(lookup.obj.name, type=IntegerType(1))
+  strides = {
+      'bit': 1,
+      'byte': 8,
+      'word': 16,
+      'dword': 32,
+      'qword': 64,
+      }
+  stride = strides[lookup.key]
+  obj, ty = interpret_expr(lookup.obj, env)
+  return obj.set_stride(stride), ty
 
 # dispatch table for different ast nodes
 interpreters = {
+    While: interpret_while,
     For: interpret_for,
     Update: interpret_update,
     BinaryExpr: interpret_binary_expr,
@@ -581,6 +793,7 @@ interpreters = {
     Select: interpret_select,
     FuncDef: interpret_func_def,
     Match: interpret_match,
+    Lookup: interpret_lookup,
     }
 
 def interpret_stmt(stmt, env):
@@ -597,30 +810,43 @@ def interpret_expr(expr, env):
 
 def evaluate_expr(expr, env):
   '''
-  similar to interpret_expr, except we force evaluation of a slice to a concrete value
+  similar to interpret_expr, except we deref a slice to a concrete value
   '''
   slice_or_val, type = interpret_expr(expr, env)
   return get_value(slice_or_val, env), type
 
-# TODO: before execution, step over (statically) all assignment to determine bitwidth of all variables and define them ahead of time
 def interpret(spec, args=None):
-  # bring arguments into scope
+  # bring the arguments into scope
   env = Environment()
   if args is None:
     args = [None] * len(spec.params)
+  out_params = []
+  returns_void = False
   for arg, param in zip(args, spec.params):
-    param_type = concrete_types[param.type]
+    if param.type.endswith('*'):
+      param_type = concrete_types[param.type[:-1].strip()]
+      out_params.append(param.name)
+    else:
+      param_type = concrete_types[param.type]
     env.define(param.name, type=param_type, value=arg)
-  env.define('dst', type=concrete_types[spec.rettype])
+  if spec.rettype != 'void':
+    env.define('dst', type=concrete_types[spec.rettype])
+  else:
+    returns_void = True
 
   for stmt in spec.spec:
     if type(stmt) == Return:
-      assign_to_dst = Update(lhs=Var('dst'), rhs=stmt.val, modifier=None)
+      assign_to_dst = Update(lhs=Var('dst'), rhs=stmt.val)
       interpret_stmt(assign_to_dst, env)
       break
     interpret_stmt(stmt, env)
 
-  return env.get_value('dst')
+  outputs = {out_param : env.get_value(out_param) for out_param in out_params}
+  if returns_void:
+    dst = None
+  else:
+    dst = env.get_value('dst')
+  return dst, outputs
 
 if __name__ == '__main__':
 
@@ -652,8 +878,78 @@ ENDFOR
   a = [1,2]
   b = [1,2]
   c = interpret(spec, eager_map(float_vec_to_bits, [a, b]))
-  print(bits_to_float_vec(c))
+  print(bits_to_float_vec(c[0]))
   c = interpret(spec, eager_map(float_vec_to_bits, [[4,5], [7,8]]))
-  print(bits_to_float_vec(c))
+  print(bits_to_float_vec(c[0]))
   c = interpret(spec, eager_map(float_vec_to_bits, [[2,3], [4,9]]))
-  print(bits_to_float_vec(c))
+  print(bits_to_float_vec(c[0]))
+
+  sema = '''
+  <intrinsic tech="Other" rettype='unsigned int' name='_mulx_u32'>
+    <type>Integer</type>
+    <CPUID>BMI2</CPUID>
+    <category>Arithmetic</category>
+    <parameter type='unsigned int' varname='a' />
+    <parameter type='unsigned int' varname='b' />
+    <parameter type='unsigned int*' varname='hi' />
+    <description>Multiply unsigned 32-bit integers "a" and "b", store the low 32-bits of the result in "dst", and store the high 32-bits in "hi". This does not read or write arithmetic flags.</description>
+    <operation>
+dst[31:0] := (a * b)[31:0]
+hi[31:0] := (a * b)[63:32]
+    </operation>
+    <instruction name='mulx' form='r32, r32, m32' />
+    <header>immintrin.h</header>
+</intrinsic>
+  '''
+  intrin_node = ET.fromstring(sema)
+  spec = get_spec_from_xml(intrin_node)
+  print(interpret(spec, [Bits(uint=2, length=32), Bits(uint=3, length=32)]))
+
+  sema = '''
+  <intrinsic tech="AVX-512" rettype="__m512i" name="_mm512_shuffle_epi8">
+    <type>Integer</type>
+    <CPUID>AVX512BW</CPUID>
+    <category>Miscellaneous</category>
+    <parameter varname="a" type="__m512i"/>
+    <parameter varname="b" type="__m512i"/>
+    <description>Shuffle packed 8-bit integers in "a" according to shuffle control mask in the corresponding 8-bit element of "b", and store the results in "dst".</description>
+    <operation>
+FOR j := 0 to 63
+    i := j*8
+    IF b[i+7] == 1
+        dst[i+7:i] := 0
+    ELSE
+        index[5:0] := b[i+3:i] + (j &amp; 0x30)
+        dst[i+7:i] := a[index*8+7:index*8]
+    FI
+ENDFOR
+dst[MAX:512] := 0
+    </operation>
+    <instruction name="vpshufb"/>
+    <header>immintrin.h</header>
+</intrinsic>
+  '''
+  intrin_node = ET.fromstring(sema)
+  spec = get_spec_from_xml(intrin_node)
+  print(interpret(spec, [Bits(uint=2, length=32), Bits(uint=3, length=32)]))
+
+  sema = '''
+  <intrinsic tech="Other" rettype='unsigned int' name='_bextr_u32'>
+    <type>Integer</type>
+    <CPUID>BMI1</CPUID>
+    <category>Bit Manipulation</category>
+    <parameter type='unsigned int' varname='a' />
+    <parameter type='unsigned int' varname='start' />
+    <parameter type='unsigned int' varname='len' />
+    <description>Extract contiguous bits from unsigned 32-bit integer "a", and store the result in "dst". Extract the number of bits specified by "len", starting at the bit specified by "start".</description>
+    <operation>
+tmp := ZeroExtend_To_512(a)
+dst := ZeroExtend(tmp[start[7:0]+len[7:0]-1:start[7:0]])
+    </operation>
+    <instruction name='bextr' form='r32, r32, r32'/>
+    <header>immintrin.h</header>
+</intrinsic>
+  '''
+  intrin_node = ET.fromstring(sema)
+  spec = get_spec_from_xml(intrin_node)
+  print(interpret(spec, [Bits(uint=0b1011001, length=32), Bits(uint=2, length=32), Bits(uint=4, length=32)]))

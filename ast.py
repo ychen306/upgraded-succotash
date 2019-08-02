@@ -3,7 +3,7 @@ from collections import namedtuple
 BitSlice = namedtuple('BitSlice', ['bv', 'hi', 'lo'])
 Var = namedtuple('Var', ['name'])
 Number = namedtuple('Number', ['val'])
-Update = namedtuple('Update', ['lhs', 'rhs', 'modifier'])
+Update = namedtuple('Update', ['lhs', 'rhs'])
 OpUpdate = namedtuple('OpUpdate', ['op_name'])
 # inc is a flag specifying whether we increment of decrement the induction variable
 For = namedtuple('For', ['iterator', 'begin', 'end', 'body', 'inc'])
