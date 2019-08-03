@@ -4,63 +4,12 @@ import operator
 from bitstring import Bits, BitArray, CreationError
 import math
 
-# is is_pointer then this is a pointer to the type
-ConcreteType = namedtuple('ConcreteType', ['bitwidth', 'is_float', 'is_double', 'is_pointer'])
+from bit_util import *
+from intrinsic_types import (
+    intrinsic_types, max_vl,
+    IntegerType, FloatType, DoubleType,
+    is_float)
 
-IntegerType = lambda bw: ConcreteType(bw, False, False, False)
-FloatType = lambda bw: ConcreteType(bw, True, False, False)
-DoubleType = lambda bw: ConcreteType(bw, False, True, False)
-PointerType = lambda ty: ty._replace(is_pointer=True)
-
-max_vl = 512
-
-# convert textual types like '_m512i' to ConcreteType
-concrete_types = {
-    '_m512i': IntegerType(max(max_vl, 512)), # typo in the manual
-    '__m512i': IntegerType(max(max_vl, 512)),
-    '__m256i': IntegerType(max(max_vl, 256)),
-    '__m128i': IntegerType(max(max_vl, 128)),
-    '__m64': IntegerType(64),
-
-    # single precision floats
-    '__m512': FloatType(max(max_vl, 512)),
-    '__m256': FloatType(max(max_vl, 256)),
-    '__m128': FloatType(max(max_vl, 128)),
-    '_m512': FloatType(max(max_vl, 512)),
-    '_m256': FloatType(max(max_vl, 256)),
-    '_m128': FloatType(max(max_vl, 128)),
-
-    # double precision floats
-    '__m512d': DoubleType(max(max_vl, 512)),
-    '__m256d': DoubleType(max(max_vl, 256)),
-    '__m128d': DoubleType(max(max_vl, 128)),
-    '_m512d': DoubleType(max(max_vl, 512)),
-    '_m256d': DoubleType(max(max_vl, 256)),
-    '_m128d': DoubleType(max(max_vl, 128)),
-
-    # masks
-    '__mmask8': IntegerType(8),
-    '__mmask16': IntegerType(8),
-    '__mmask32': IntegerType(8),
-    '__mmask64': IntegerType(8),
-
-    'float': FloatType(32),
-    'double': FloatType(64),
-    'int': IntegerType(32),
-    'char': IntegerType(8),
-    'short': IntegerType(16),
-    'unsigned short': IntegerType(16),
-    'const int': IntegerType(32),
-    'uint': IntegerType(32),
-    'unsigned int': IntegerType(32),
-    'unsigned char': IntegerType(8),
-    'unsigned long': IntegerType(64),
-    '__int64': IntegerType(64),
-    '__int32': IntegerType(32),
-    'unsigned __int32': IntegerType(32),
-    'unsigned __int64': IntegerType(64),
-    '_MM_PERM_ENUM': IntegerType(8),
-    }
 
 def get_default_value(type):
   if type.is_float:
@@ -226,17 +175,6 @@ def rol(bits, a):
   bit_array.rol(a)
   return BitArray(uint=bit_array.uint, length=bits.length)
 
-# this is to deal with the facts that in bitstring, 
-# b[0] actually means the HIGHEST ORDER BIT!!!
-# DONT TRY TO UPDATE THINGS FROM BITSTRING DIRECTLY
-def slice_bits(bits, lo, hi):
-  lo, hi = bits.length - hi, bits.length - lo
-  return bits[lo:hi]
-
-def update_bits(bits, lo, hi, val):
-  lo, hi = bits.length - hi, bits.length - lo
-  bits[lo:hi] = val
-
 get_max_arg_width = lambda a, b: max(a.length, b.length)
 get_total_arg_width = lambda a, b: a.length + b.length
 
@@ -290,27 +228,6 @@ unary_op_impls = {
     ('-', False): unary_op(operator.neg),
     ('~', False): unary_op(lambda x: ~x),
     }
-
-def int_to_bits(x, bitwidth=32):
-  if x < 0:
-    return Bits(int=x, length=bitwidth)
-  return Bits(uint=x, length=bitwidth)
-
-def float_to_bits(x, bitwidth=32):
-  return Bits(float=x, length=bitwidth)
-
-def float_vec_to_bits(vec, float_size=64):
-  bitwidth = len(vec) * float_size
-  bits = BitArray(uint=0, length=bitwidth)
-  for i, x in enumerate(vec):
-    update_bits(bits, i*float_size, (i+1)*float_size, float_to_bits(x, float_size))
-  return Bits(uint=bits.uint, length=bitwidth)
-
-def bits_to_float_vec(bits, float_size=64):
-  vec = []
-  for i in range(0, bits.length, float_size):
-    vec.append(slice_bits(bits, i, i+float_size).float)
-  return vec
 
 def get_signed_max(bitwidth):
   return (1<<(bitwidth-1))-1
@@ -507,9 +424,6 @@ builtins = {
     # bitstring has overloaded plus for concatenation
     'concat': builtin_concat,
     }
-
-def is_float(type):
-  return type.is_float or type.is_double
 
 # TODO: handle integer overflow here
 def interpret_update(update, env):
@@ -824,13 +738,13 @@ def interpret(spec, args=None):
   returns_void = False
   for arg, param in zip(args, spec.params):
     if param.type.endswith('*'):
-      param_type = concrete_types[param.type[:-1].strip()]
+      param_type = intrinsic_types[param.type[:-1].strip()]
       out_params.append(param.name)
     else:
-      param_type = concrete_types[param.type]
+      param_type = intrinsic_types[param.type]
     env.define(param.name, type=param_type, value=arg)
   if spec.rettype != 'void':
-    env.define('dst', type=concrete_types[spec.rettype])
+    env.define('dst', type=intrinsic_types[spec.rettype])
   else:
     returns_void = True
 
@@ -841,7 +755,7 @@ def interpret(spec, args=None):
       break
     interpret_stmt(stmt, env)
 
-  outputs = {out_param : env.get_value(out_param) for out_param in out_params}
+  outputs = [env.get_value(out_param) for out_param in out_params]
   if returns_void:
     dst = None
   else:
