@@ -2,6 +2,7 @@ import xml.etree.ElementTree as ET
 from manual_parser import get_spec_from_xml
 import sys
 from interp import interpret
+from fuzzer import fuzz_intrinsic
 
 data_f = sys.argv[1]
 data_root = ET.parse(data_f)
@@ -62,6 +63,7 @@ for intrin in data_root.iter('intrinsic'):
       'CheckFPClass' in sema.text or
       'ROUND' in sema.text or
       'carry_out' in sema.text or
+      'SignBit' in sema.text or
       'SSP' in sema.text):
     continue
   if 'str' in intrin.attrib['name']:
@@ -92,7 +94,8 @@ for intrin in data_root.iter('intrinsic'):
       #if 'ELSE IF' in sema.text:
       #  continue
       spec = get_spec_from_xml(intrin)
-      interpret(spec)
+      ok = fuzz_intrinsic(spec)
+      print('\t',ok)
       supported_insts.add(inst_form)
       num_parsed += 1
     except SyntaxError:

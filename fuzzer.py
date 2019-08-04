@@ -7,6 +7,10 @@ import subprocess
 from interp import interpret
 from bit_util import *
 
+'''
+TODO: handle parameters named 'imm8..' specially
+'''
+
 src_path = os.path.dirname(os.path.abspath(__file__))
 
 load_intrinsics = {
@@ -136,7 +140,14 @@ def emit_print(outf, var, typename):
   if typename in printers:
     # use the predefined printers
     printer = printers[typename]
-    outf.write('%s(&%s);\n' % (printer, var))
+    if ty.is_float:
+      param_ty = 'float'
+    elif ty.is_double:
+      param_ty = 'double'
+    else:
+      param_ty = 'unsigned long'
+
+    outf.write('%s((%s *)&%s);\n' % (printer, param_ty, var))
   else:
     if ty.is_float:
       outf.write('printf("%%f\\n", %s);\n' % var)
@@ -195,6 +206,12 @@ def fuzz_intrinsic_once(outf, spec):
     return [out] + out_params, [spec.rettype] + out_param_types
   return out_params, out_param_types
 
+def identical_vecs(a, b, is_float):
+  errs = list(aa-bb for aa,bb in zip(a, b))
+  if is_float:
+    return all(abs(err) <= 1e-6 for err in errs)
+  return all(err == 0 for err in errs)
+
 def bits_to_vec(bits, typename):
   if typename.endswith('*'):
     ty = intrinsic_types[typename[:-1]]
@@ -208,12 +225,26 @@ def bits_to_vec(bits, typename):
   # integer type
   return bits_to_long_vec(bits)
 
+# TODO: make this return True if correct
 def fuzz_intrinsic(spec, num_tests=10):
   interpreted = []
-  with NamedTemporaryFile(suffix='.c', mode='w') as outf, NamedTemporaryFile() as exe:
+  with NamedTemporaryFile(suffix='.c', mode='w') as outf, NamedTemporaryFile(delete=False) as exe:
     outf.write('''
+#include <emmintrin.h> 
 #include <immintrin.h>
+#include <nmmintrin.h>
+#include <pmmintrin.h>
+#include <smmintrin.h>
+#include <tmmintrin.h>
+#include <wmmintrin.h>
+#include <xmmintrin.h>
+
+#include <stdio.h>
 #include "printers.h"
+
+#define __int64_t __int64;
+#define __int64 long long
+
 int main() {
         ''')
     
@@ -227,10 +258,13 @@ int main() {
     outf.flush()
 
     # TODO: add CPUIDs 
-    subprocess.check_output(
-        'cc %s -o %s -I%s %s/printers.o >/dev/null 2>/dev/null -mavx -mavx2 -mfma' % (
-          outf.name, exe.name, src_path, src_path),
-        shell=True)
+    try:
+      subprocess.check_output(
+          'cc %s -o %s -I%s %s/printers.o >/dev/null 2>/dev/null -mavx -mavx2 -mfma' % (
+            outf.name, exe.name, src_path, src_path),
+          shell=True)
+    except subprocess.CalledProcessError:
+      return False
 
     num_outputs_per_intrinsic = len(interpreted[0][0])
 
@@ -238,65 +272,49 @@ int main() {
     lines = stdout.decode('utf-8').strip().split('\n')
     assert(len(lines) == len(interpreted) * num_outputs_per_intrinsic)
 
-    for i in range(0, len(lines), num_outputs_per_intrinsic):
-      outputs, output_types = interpreted[i // num_outputs_per_intrinsic]
-      for output, output_typename, line in zip(outputs, output_types, lines[i:i+num_outputs_per_intrinsic]):
-        fields = line.strip().split()
-        if is_float(intrinsic_types[output_typename]):
-          ref_vec = [float(x) for x in fields]
-        else:
-          ref_vec = [int(x) for x in fields]
-        vec = bits_to_vec(output, output_typename)
-        print('DIFF:', list(a-b for a,b in zip(ref_vec, vec)))
-        print(vec, ref_vec)
+  os.system('rm '+exe.name)
+
+  for i in range(0, len(lines), num_outputs_per_intrinsic):
+    outputs, output_types = interpreted[i // num_outputs_per_intrinsic]
+    for output, output_typename, line in zip(outputs, output_types, lines[i:i+num_outputs_per_intrinsic]):
+      fields = line.strip().split()
+      output_is_float = is_float(intrinsic_types[output_typename])
+      if output_is_float:
+        ref_vec = [float(x) for x in fields]
+      else:
+        ref_vec = [int(x) for x in fields]
+      vec = bits_to_vec(output, output_typename)
+      if not identical_vecs(vec, ref_vec, is_float):
+        return False
+  return True
 
 if __name__ == '__main__':
   import sys
   import xml.etree.ElementTree as ET
   from manual_parser import get_spec_from_xml
 
-  sema = '''
-  <intrinsic tech='SSE2' vexEq='TRUE' rettype='__m128d' name='_mm_add_pd'>
-        <type>Floating Point</type>
-        <CPUID>SSE2</CPUID>
-        <category>Arithmetic</category>
-        <parameter varname='a' type='__m128d'/>
-        <parameter varname='b' type='__m128d'/>
-        <description>Add packed double-precision (64-bit) floating-point elements in "a" and "b", and store the results in "dst".</description>
-        <operation>
-FOR j := 0 to 1
-        i := j*64
-        dst[i+63:i] := a[i+63:i] + b[i+63:i]
-ENDFOR
-        </operation>
-        <instruction name='addpd' form='xmm, xmm'/>
-        <header>emmintrin.h</header>
-</intrinsic>
-  '''
-  intrin_node = ET.fromstring(sema)
-  spec = get_spec_from_xml(intrin_node)
-  fuzz_intrinsic(spec)
-
 
   sema = '''
-  <intrinsic tech='AVX2' rettype='__m256i' name='_mm256_add_epi32'>
-    <type>Integer</type>
-    <CPUID>AVX2</CPUID>
-    <category>Arithmetic</category>
-    <parameter varname='a' type='__m256i'/>
-    <parameter varname='b' type='__m256i'/>
-    <description>Add packed 32-bit integers in "a" and "b", and store the results in "dst".</description>
-    <operation>
+<intrinsic tech='AVX2' rettype='__m256' name='_mm256_permutevar8x32_ps'>
+	<type>Floating Point</type>
+	<CPUID>AVX2</CPUID>
+	<category>Swizzle</category>
+	<parameter varname='a' type='__m256'/>
+	<parameter varname='idx' type='__m256i'/>
+	<description>Shuffle single-precision (32-bit) floating-point elements in "a" across lanes using the corresponding index in "idx".</description>
+	<operation>
 FOR j := 0 to 7
-    i := j*32
-    dst[i+31:i] := a[i+31:i] + b[i+31:i]
+	i := j*32
+	id := idx[i+2:i]*32
+	dst[i+31:i] := a[id+31:id]
 ENDFOR
 dst[MAX:256] := 0
-    </operation>
-    <instruction name='vpaddd' form='ymm, ymm, ymm'/>
-    <header>immintrin.h</header>
+	</operation>
+	<instruction name='vpermps' form='ymm, ymm, ymm'/>
+	<header>immintrin.h</header>
 </intrinsic>
   '''
   intrin_node = ET.fromstring(sema)
   spec = get_spec_from_xml(intrin_node)
-  fuzz_intrinsic(spec)
+  ok = fuzz_intrinsic(spec)
+  print(ok)

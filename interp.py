@@ -4,6 +4,11 @@ import operator
 from bitstring import Bits, BitArray, CreationError
 import math
 
+'''
+TODO: refactor all the "if signed... Bits(..) else Bits(..) "
+  by using helper funcs like create_signed_bits...
+'''
+
 from bit_util import *
 from intrinsic_types import (
     intrinsic_types, max_vl,
@@ -95,21 +100,31 @@ class Slice:
     '''
     rhs : integer
     '''
+    bitwidth = env.get_type(self.var).bitwidth
+
     if self.lo_idx > self.hi_idx:
+      return
+    if self.hi_idx >= bitwidth:
+      # fingers crossed that this is one of thos dst[MAX:..] = 0 expressions
       return
 
     if rhs == None: # undefined
       return
 
+    old_val = env.get_value(self.var)
+    old_bits = BitArray(uint=old_val.uint, length=old_val.length)
+
     update_width = self.hi_idx - self.lo_idx + 1
+
     if update_width < rhs.length:
       # trunc rhs
       rhs = slice_bits(rhs, 0, update_width)
 
-    old_val = env.get_value(self.var)
-    old_bits = BitArray(uint=old_val.uint, length=old_val.length)
-    bitwidth = env.get_type(self.var).bitwidth
     extend = zero_extend if self.zero_extending else sign_extend
+    if not (self.lo_idx >= 0 and
+        self.lo_idx <= self.hi_idx and
+        self.hi_idx < bitwidth):
+      print(self.lo_idx, self.hi_idx, bitwidth)
     assert (self.lo_idx >= 0 and
         self.lo_idx <= self.hi_idx and
         self.hi_idx < bitwidth)
@@ -136,15 +151,30 @@ def get_value(v, env):
     return v.get_value(env)
   return v
 
-def binary_op(op, signed=True, get_bitwidth=lambda a, b: a.length):
+def binary_op(op, trunc=False, signed=True, get_bitwidth=lambda a, b: a.length):
   def impl(a, b):
     bitwidth = get_bitwidth(a, b)
+    mask = (1 << bitwidth)-1
     #return Bits(int=op(a.int, b.int), length=bitwidth)
     if signed:
       return Bits(int=op(a.int, b.int), length=bitwidth)
     else:
-      return Bits(uint=op(a.uint, b.uint), length=bitwidth)
+      c = op(a.uint, b.uint)
+      if trunc:
+        c &= mask
+      return Bits(uint=c, length=bitwidth)
   return impl
+
+def binary_sub(a, b):
+  mask = (1 << b.length) - 1
+  b_comp = ((1<<b.length) - b.uint)
+  c = Bits(uint=(a.uint + b_comp) & mask, length=get_max_arg_width(a,b))
+  return c
+
+def binary_neg(a):
+  mask = (1 << a.length) - 1
+  a_comp = ((1<<a.length) - a.uint)
+  return Bits(uint=a_comp & mask, length=a.length)
 
 def binary_shift(op):
   return lambda a, b: op(a, b.int)
@@ -200,13 +230,14 @@ binary_op_impls = {
     # FIXME: what about the signednes?????
     ('*', False): binary_op(operator.mul, get_bitwidth=get_total_arg_width, signed=False),
     ('+', False): binary_op(operator.add, get_bitwidth=get_total_arg_width, signed=False),
-    ('-', False): binary_op(operator.sub),
-    ('>', False): binary_op(operator.gt),
+    #('-', False): lambda a, b: a + (~b+1),
+    ('-', False): binary_sub,
+    ('>', False): binary_op(operator.gt, signed=False),
     ('>=', False): binary_op(operator.ge),
-    ('<', False): binary_op(operator.gt),
+    ('<', False): binary_op(operator.lt),
     ('<=', False): binary_op(operator.le),
     ('%', False): binary_op(operator.imod),
-    ('<<', False): binary_shift(operator.lshift),
+    ('<<', False): binary_op(operator.lshift, signed=False),
     ('<<<', False): binary_shift(rol), # is this correct??
     ('>>', False): binary_shift(operator.rshift),
 
@@ -225,7 +256,7 @@ unary_op_impls = {
     ('-', True): unary_float_op(operator.neg),
 
     ('NOT', False): unary_op(operator.not_, signed=False),
-    ('-', False): unary_op(operator.neg),
+    ('-', False): binary_neg,
     ('~', False): unary_op(lambda x: ~x),
     }
 
@@ -252,7 +283,10 @@ def gen_saturation_func(bitwidth, in_signed, out_signed):
       val = lo
     elif val > hi:
       val = hi
-    return Bits(int=val, length=bitwidth), IntegerType(bitwidth)
+    if out_signed:
+      return Bits(int=val, length=bitwidth), IntegerType(bitwidth)
+    else:
+      return Bits(uint=val, length=bitwidth), IntegerType(bitwidth)
   return saturate
 
 def zero_extend(x, bitwidth):
@@ -318,6 +352,15 @@ def builtin_binary_func(op):
     # float
     return Bits(float=op(a.float, b.float), length=ty.bitwidth), ty
   return impl
+
+def builtin_abs(args, _):
+  [(a, ty)] = args
+
+  if not is_float(ty):
+    return Bits(uint=abs(a.int), length=ty.bitwidth), ty
+
+  # float
+  return Bits(float=op(slice_or_val.float), length=ty.bitwidth), ty
 
 def builtin_concat(args, _):
   [(a, a_ty), (b, b_ty)] = args
@@ -413,7 +456,7 @@ builtins = {
     'APPROXIMATE': ignore,
     'MIN': builtin_binary_func(min),
     'MAX': builtin_binary_func(max),
-    'ABS': builtin_unary_func(abs),
+    'ABS': builtin_abs,
     'SQRT': builtin_unary_func(math.sqrt),
     'FLOOR': builtin_unary_func(math.floor),
     'CEIL': builtin_unary_func(math.ceil),
@@ -438,7 +481,9 @@ def interpret_update(update, env):
 
   # TODO: refactor this shit out
   if type(update.lhs) == Var and not env.has(update.lhs.name):
+    assert not env.has(update.lhs.name)
     env.define(update.lhs.name, rhs_type)
+    assert env.has(update.lhs.name)
 
   lhs, _ = interpret_expr(update.lhs, env)
 
@@ -494,17 +539,18 @@ def interpret_binary_expr(expr, env):
 
   # automatically change bit widths 
   # TODO: make sure this crap is correct
-  if a_type.bitwidth < 16:
-    a = sign_extend(a, 16)
-    a_type = a_type._replace(bitwidth=16)
-  if b_type.bitwidth < 16:
-    b = sign_extend(b, 16)
-    b_type = b_type._replace(bitwidth=16)
+  #if a_type.bitwidth < 16:
+  #  a = sign_extend(a, 16)
+  #  a_type = a_type._replace(bitwidth=16)
+  #if b_type.bitwidth < 16:
+  #  b = sign_extend(b, 16)
+  #  b_type = b_type._replace(bitwidth=16)
   #assert a_type == b_type or is_number(expr.a) or is_number(expr.b) or expr.op in ('<<', '>>')
 
   impl_sig = expr.op, is_float(a_type)
   impl = binary_op_impls[impl_sig]
-  return impl(a, b), a_type
+  result = impl(a, b)
+  return result, a_type._replace(bitwidth=result.length)
 
 def interpret_unary_expr(expr, env):
   a, a_type = evaluate_expr(expr.a, env)
