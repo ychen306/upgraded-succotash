@@ -1,5 +1,5 @@
 from ast import Parameter, Spec
-from parser import parser
+from parser import parse
 
 def get_spec_from_xml(node):
   params = []
@@ -14,11 +14,13 @@ def get_spec_from_xml(node):
   assert(inst is not None)
   operation = node.find('operation')
   assert(operation is not None)
-  spec = parser.parse(operation.text)
+  spec, binary_exprs = parse(operation.text)
   rettype = node.attrib['rettype']
   return Spec(
       intrin=intrin,
       inst=inst,
       spec=spec,
       params=params,
-      rettype=rettype)
+      rettype=rettype,
+      configs={}, # by default nothing is configured
+      binary_exprs=binary_exprs)

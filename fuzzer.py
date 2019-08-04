@@ -235,8 +235,10 @@ def bits_to_vec(bits, typename):
   # integer type
   return bits_to_long_vec(bits)
 
-# TODO: make this return True if correct
 def fuzz_intrinsic(spec, num_tests=10):
+  '''
+  spec -> (spec correct, can compile)
+  '''
   interpreted = []
   with NamedTemporaryFile(suffix='.c', mode='w') as outf, NamedTemporaryFile(delete=False) as exe:
     outf.write('''
@@ -274,7 +276,7 @@ int main() {
             outf.name, exe.name, src_path, src_path),
           shell=True)
     except subprocess.CalledProcessError:
-      return False
+      return False, False
 
     num_outputs_per_intrinsic = len(interpreted[0][0])
 
@@ -295,8 +297,8 @@ int main() {
         ref_vec = [int(x) for x in fields]
       vec = bits_to_vec(output, output_typename)
       if not identical_vecs(vec, ref_vec, is_float):
-        return False
-  return True
+        return False, True
+  return True, True
 
 if __name__ == '__main__':
   import sys
@@ -304,30 +306,21 @@ if __name__ == '__main__':
   from manual_parser import get_spec_from_xml
 
   sema = '''
-<intrinsic tech="AVX-512" rettype="__m128d" name="_mm_mask_compress_pd">
-	<type>Floating Point</type>
-	<CPUID>AVX512VL</CPUID>
-	<CPUID>AVX512F</CPUID>
-	<category>Miscellaneous</category>
-	<parameter varname="src" type="__m128d"/>
-	<parameter varname="k" type="__mmask8"/>
-	<parameter varname="a" type="__m128d"/>
-	<description>Contiguously store the active double-precision (64-bit) floating-point elements in "a" (those with their respective bit set in writemask "k") to "dst", and pass through the remaining elements from "src".</description>
+<intrinsic tech='MMX' rettype='__m64' name='_m_pcmpgtb'>
+	<type>Integer</type>
+	<CPUID>MMX</CPUID>
+	<category>Compare</category>
+	<parameter varname='a' type='__m64'/>
+	<parameter varname='b' type='__m64'/>
+	<description>Compare packed 8-bit integers in "a" and "b" for greater-than, and store the results in "dst".</description>
 	<operation>
-size := 64
-m := 0
-FOR j := 0 to 1
-	i := j*64
-	IF k[j]
-		dst[m+size-1:m] := a[i+63:i]
-		m := m + size
-	FI
+FOR j := 0 to 7
+	i := j*8
+	dst[i+7:i] := ( a[i+7:i] &gt; b[i+7:i] ) ? 0xFF : 0
 ENDFOR
-dst[127:m] := src[127:m]
-dst[MAX:128] := 0
 	</operation>
-	<instruction name="vcompresspd"/>
-	<header>immintrin.h</header>
+	<instruction name='pcmpgtb' form='mm, mm'/>
+	<header>mmintrin.h</header>
 </intrinsic>
   '''
   intrin_node = ET.fromstring(sema)

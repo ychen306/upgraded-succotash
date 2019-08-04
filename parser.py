@@ -3,8 +3,14 @@ import ply.yacc as yacc
 from lex import tokens
 from ast import *
 
+def new_binary_expr(parser, op, a, b):
+  expr_id = gen_unique_id(parser)
+  expr = BinaryExpr(op, a, b, expr_id)
+  parser.binary_exprs.append(expr)
+  return expr
+
 def parse_binary(op, p):
-  p[0] = BinaryExpr(op, p[1], p[3])
+  p[0] = new_binary_expr(p.parser, op, p[1], p[3])
 
 def parse_unary(op, p):
   p[0] = UnaryExpr(op, p[2])
@@ -63,11 +69,11 @@ def p_expr_assign_op(p):
 
 def p_expr_plus_equal(p):
   'expr : expr PLUS_EQUAL expr'
-  p[0] = Update(p[1], BinaryExpr(op='+', a=p[1], b=p[3]))
+  p[0] = Update(p[1], new_binary_expr(p.parser, op='+', a=p[1], b=p[3]))
 
 def p_expr_or_equal(p):
   'expr : expr OR_EQUAL expr'
-  p[0] = Update(p[1], BinaryExpr(op='|', a=p[1], b=p[3]))
+  p[0] = Update(p[1], new_binary_expr(p.parser, op='|', a=p[1], b=p[3]))
 
 def p_stmt_while(p):
   'stmt : DO WHILE expr stmts OD'
@@ -272,6 +278,22 @@ precedence = (
 )
 
 parser = yacc.yacc()
+
+def gen_unique_id(parser):
+  parser.id_counter += 1
+  return parser.id_counter
+
+def reset_parser_state(parser):
+  parser.id_counter = 0
+  parser.binary_exprs = []
+
+def parse(src):
+  reset_parser_state(parser)
+  ast = parser.parse(src)
+  binary_exprs = parser.binary_exprs
+  reset_parser_state
+
+  return ast, binary_exprs
 
 if __name__ == '__main__':
   # from https://www.felixcloutier.com/x86/vpgatherdq:vpgatherqq

@@ -36,6 +36,14 @@ class Environment:
     if func_defs is None:
       func_defs = {}
     self.func_defs = func_defs
+    # mapping expr -> signess
+    self.reconfigured_binary_exprs = {}
+
+  def configure_binary_expr_signedness(self, configs):
+    self.reconfigured_binary_exprs = dict(configs)
+
+  def get_binary_expr_signedness(self, expr):
+    return self.reconfigured_binary_exprs.get(expr.expr_id, None)
 
   def new_env(self):
     return Environment(self.func_defs)
@@ -159,11 +167,11 @@ def get_value(v, env):
   return v
 
 def binary_op(op, trunc=False, signed=True, get_bitwidth=lambda a, b: a.length):
-  def impl(a, b):
+  def impl(a, b, signed_override=signed):
     bitwidth = get_bitwidth(a, b)
     mask = (1 << bitwidth)-1
     #return Bits(int=op(a.int, b.int), length=bitwidth)
-    if signed:
+    if signed_override:
       return Bits(int=op(a.int, b.int), length=bitwidth)
     else:
       c = op(a.uint, b.uint)
@@ -455,6 +463,7 @@ builtins = {
     'Convert_FP32_To_FP64': builtin_float_to_double,
     'Float64ToFloat32': builtin_double_to_float,
     'Float32ToFloat64': builtin_float_to_double,
+    # FIXME: fix the signedness issue.
     'Convert_FP64_To_UnsignedInt32': builtin_float_to_int,
     'Convert_FP32_To_UnsignedInt32': builtin_float_to_int,
     'Convert_FP64_To_UnsignedInt64': builtin_float_to_long,
@@ -464,6 +473,7 @@ builtins = {
     'Convert_FP64_To_UnsignedInt64_Truncate': builtin_float_to_long_trunc,
     'Convert_FP32_To_Int64_Truncate': builtin_float_to_long_trunc,
     'Convert_FP32_To_UnsignedInt64_Truncate': builtin_float_to_long_trunc,
+    'Convert_FP32_To_IntegerTruncate': builtin_float_to_long_trunc,
     'ConvertUnsignedIntegerTo_FP64': builtin_int_to_float(signed=False, bitwidth=64),
     'ConvertUnsignedInt32_To_FP32': builtin_int_to_float(signed=False, bitwidth=32),
     'Convert_UnsignedInt32_To_FP64': builtin_int_to_float(signed=False, bitwidth=64),
@@ -570,7 +580,13 @@ def interpret_binary_expr(expr, env):
 
   impl_sig = expr.op, is_float(a_type)
   impl = binary_op_impls[impl_sig]
-  result = impl(a, b)
+  # check the configuration for whether this expression is signed
+  signedness = env.get_binary_expr_signedness(expr)
+  if signedness is not None:
+    result = impl(a, b, signedness)
+  else:
+    # if signedness is not specified, just use the default
+    result = impl(a, b)
   return result, a_type._replace(bitwidth=result.length)
 
 def interpret_unary_expr(expr, env):
@@ -799,6 +815,7 @@ def evaluate_expr(expr, env):
 def interpret(spec, args=None):
   # bring the arguments into scope
   env = Environment()
+  env.configure_binary_expr_signedness(spec.configs)
   if args is None:
     args = [None] * len(spec.params)
   out_params = []

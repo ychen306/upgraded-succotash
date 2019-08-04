@@ -2,7 +2,7 @@ import xml.etree.ElementTree as ET
 from manual_parser import get_spec_from_xml
 import sys
 from interp import interpret
-from fuzzer import fuzz_intrinsic
+from spec_configurer import configure_spec
 
 data_f = sys.argv[1]
 data_root = ET.parse(data_f)
@@ -95,7 +95,7 @@ for intrin in data_root.iter('intrinsic'):
       #if 'ELSE IF' in sema.text:
       #  continue
       spec = get_spec_from_xml(intrin)
-      ok = fuzz_intrinsic(spec)
+      ok, new_spec = configure_spec(spec)
       print('\t',ok)
       supported_insts.add(inst_form)
       num_parsed += 1

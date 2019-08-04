@@ -10,7 +10,7 @@ For = namedtuple('For', ['iterator', 'begin', 'end', 'body', 'inc'])
 While = namedtuple('While', ['cond', 'body'])
 If = namedtuple('If', ['cond', 'then', 'otherwise'])
 Call = namedtuple('Call', ['func', 'args'])
-BinaryExpr = namedtuple('BinaryExpr', ['op', 'a', 'b'])
+BinaryExpr = namedtuple('BinaryExpr', ['op', 'a', 'b', 'expr_id'])
 UnaryExpr = namedtuple('UnaryExpr', ['op', 'a'])
 PseudoExpr = namedtuple('PseudoExpr', ['desc'])
 PseudoStmt = namedtuple('PseudoStmt', ['desc'])
@@ -25,4 +25,10 @@ FuncDef = namedtuple('FuncDef', ['name', 'params', 'body'])
 Break = namedtuple('Break', [])
 
 Parameter = namedtuple('Parameter', ['name', 'type'])
-Spec = namedtuple('Spec', ['intrin', 'inst', 'params', 'spec', 'rettype'])
+Spec = namedtuple('Spec', [
+  'intrin', 'inst', 'params',
+  'spec', 'rettype', 'binary_exprs',
+
+  # configuration of binary exprs
+  'configs',
+  ])
