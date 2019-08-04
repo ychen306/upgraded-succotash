@@ -549,6 +549,7 @@ def interpret_binary_expr(expr, env):
 
   impl_sig = expr.op, is_float(a_type)
   impl = binary_op_impls[impl_sig]
+  print('EXPR=',expr)
   result = impl(a, b)
   return result, a_type._replace(bitwidth=result.length)
 
