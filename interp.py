@@ -138,10 +138,14 @@ class Slice:
     if not (self.lo_idx >= 0 and
         self.lo_idx <= self.hi_idx and
         self.hi_idx < total_bitwidth):
-      print(self.var, self.lo_idx, self.hi_idx)
-    assert (self.lo_idx >= 0 and
-        self.lo_idx <= self.hi_idx and
-        self.hi_idx < total_bitwidth)
+      return None
+    #if not (self.lo_idx >= 0 and
+    #    self.lo_idx <= self.hi_idx and
+    #    self.hi_idx < total_bitwidth):
+    #  print(self.var, self.lo_idx, self.hi_idx)
+    #assert (self.lo_idx >= 0 and
+    #    self.lo_idx <= self.hi_idx and
+    #    self.hi_idx < total_bitwidth)
     val = slice_bits(env.get_value(self.var), self.lo_idx, self.hi_idx+1)
     val = Bits(uint=val.uint, length=bitwidth)
     return val
@@ -378,7 +382,7 @@ def builtin_abs(args, _):
     return Bits(uint=abs(a.int), length=ty.bitwidth), ty
 
   # float
-  return Bits(float=op(slice_or_val.float), length=ty.bitwidth), ty
+  return Bits(float=abs(a.float), length=ty.bitwidth), ty
 
 def builtin_concat(args, _):
   [(a, a_ty), (b, b_ty)] = args

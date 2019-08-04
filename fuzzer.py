@@ -304,46 +304,29 @@ if __name__ == '__main__':
   from manual_parser import get_spec_from_xml
 
   sema = '''
-<intrinsic tech='Other' rettype='__m512i' name='_mm512_mask_gf2p8affine_epi64_epi8'>
-	<type>Integer</type>
-	<CPUID>GFNI</CPUID>
+<intrinsic tech="AVX-512" rettype="__m128d" name="_mm_mask_compress_pd">
+	<type>Floating Point</type>
+	<CPUID>AVX512VL</CPUID>
 	<CPUID>AVX512F</CPUID>
-	<category>Arithmetic</category>
-	<parameter varname='src' type='__m512i'/>
-	<parameter varname='k' type='__mmask64'/>
-	<parameter varname='x' type='__m512i'/>
-	<parameter varname='A' type='__m512i'/>
-	<parameter varname='b' type='int'/>
-	<description>
-		Compute an affine transformation in the Galois Field 2^8. An affine transformation is defined by "A" * "x" + "b", where "A" represents an 8 by 8 bit matrix, "x" represents an 8-bit vector, and "b" is a constant immediate byte. Store the packed 8-bit results in "dst" using writemask "k" (elements are copied from "src" when the corresponding mask bit is not set).
-	</description>
+	<category>Miscellaneous</category>
+	<parameter varname="src" type="__m128d"/>
+	<parameter varname="k" type="__mmask8"/>
+	<parameter varname="a" type="__m128d"/>
+	<description>Contiguously store the active double-precision (64-bit) floating-point elements in "a" (those with their respective bit set in writemask "k") to "dst", and pass through the remaining elements from "src".</description>
 	<operation>
-DEFINE parity(x) {
-	t := 0
-	FOR i := 0 to 7
-		t := t XOR x.bit[i]
-	ENDFOR
-	RETURN t
-}
-DEFINE affine_byte(tsrc2qw, src1byte, imm8) {
-	FOR i := 0 to 7
-		retbyte.bit[i] := parity(tsrc2qw.byte[7-i] AND src1byte) XOR imm8.bit[i]
-	ENDFOR
-	RETURN retbyte
-}
-FOR j := 0 TO 7
-	FOR bb := 0 to 7
-		IF k[j*8+bb]
-			dst.qword[j].byte[bb] := affine_byte(A.qword[j], x.qword[j].byte[bb], b)
-		ELSE
-			dst.qword[j].byte[bb] := src.qword[j].byte[bb]
-		FI
-	ENDFOR
+size := 64
+m := 0
+FOR j := 0 to 1
+	i := j*64
+	IF k[j]
+		dst[m+size-1:m] := a[i+63:i]
+		m := m + size
+	FI
 ENDFOR
-dst[MAX:512] := 0
+dst[127:m] := src[127:m]
+dst[MAX:128] := 0
 	</operation>
-	
-	<instruction name='VGF2P8AFFINEQB' form='zmm {k}, zmm, zmm, imm8' xed=''/>
+	<instruction name="vcompresspd"/>
 	<header>immintrin.h</header>
 </intrinsic>
   '''

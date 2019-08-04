@@ -28,8 +28,7 @@ for intrin in data_root.iter('intrinsic'):
         'FSGSBASE', 'RDRAND', 'RDSEED'):
       continue
     cpuid_text = cpuid.text
-  #if not intrin.attrib['name'].startswith('_mm'):
-  #  continue
+
   if (intrin.attrib['name'].endswith('getcsr') or
       intrin.attrib['name'].endswith('setcsr') or
       '_cmp_' in intrin.attrib['name'] or
