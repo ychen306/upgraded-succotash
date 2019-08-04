@@ -6,6 +6,7 @@ import os
 import subprocess
 from interp import interpret
 from bit_util import *
+import math
 
 '''
 TODO: handle parameters named 'imm8..' specially
@@ -206,8 +207,17 @@ def fuzz_intrinsic_once(outf, spec):
     return [out] + out_params, [spec.rettype] + out_param_types
   return out_params, out_param_types
 
+def get_err(a, b, is_float):
+  err = a - b
+  if not is_float:
+    return err
+  if math.isnan(a) and math.isnan(b):
+    return 0
+  return err
+
 def identical_vecs(a, b, is_float):
-  errs = list(aa-bb for aa,bb in zip(a, b))
+  errs = [get_err(aa, bb, is_float)
+      for aa,bb in zip(a, b)]
   if is_float:
     return all(abs(err) <= 1e-6 for err in errs)
   return all(err == 0 for err in errs)
@@ -293,24 +303,47 @@ if __name__ == '__main__':
   import xml.etree.ElementTree as ET
   from manual_parser import get_spec_from_xml
 
-
   sema = '''
-<intrinsic tech='AVX2' rettype='__m256' name='_mm256_permutevar8x32_ps'>
-	<type>Floating Point</type>
-	<CPUID>AVX2</CPUID>
-	<category>Swizzle</category>
-	<parameter varname='a' type='__m256'/>
-	<parameter varname='idx' type='__m256i'/>
-	<description>Shuffle single-precision (32-bit) floating-point elements in "a" across lanes using the corresponding index in "idx".</description>
+<intrinsic tech='Other' rettype='__m512i' name='_mm512_mask_gf2p8affine_epi64_epi8'>
+	<type>Integer</type>
+	<CPUID>GFNI</CPUID>
+	<CPUID>AVX512F</CPUID>
+	<category>Arithmetic</category>
+	<parameter varname='src' type='__m512i'/>
+	<parameter varname='k' type='__mmask64'/>
+	<parameter varname='x' type='__m512i'/>
+	<parameter varname='A' type='__m512i'/>
+	<parameter varname='b' type='int'/>
+	<description>
+		Compute an affine transformation in the Galois Field 2^8. An affine transformation is defined by "A" * "x" + "b", where "A" represents an 8 by 8 bit matrix, "x" represents an 8-bit vector, and "b" is a constant immediate byte. Store the packed 8-bit results in "dst" using writemask "k" (elements are copied from "src" when the corresponding mask bit is not set).
+	</description>
 	<operation>
-FOR j := 0 to 7
-	i := j*32
-	id := idx[i+2:i]*32
-	dst[i+31:i] := a[id+31:id]
+DEFINE parity(x) {
+	t := 0
+	FOR i := 0 to 7
+		t := t XOR x.bit[i]
+	ENDFOR
+	RETURN t
+}
+DEFINE affine_byte(tsrc2qw, src1byte, imm8) {
+	FOR i := 0 to 7
+		retbyte.bit[i] := parity(tsrc2qw.byte[7-i] AND src1byte) XOR imm8.bit[i]
+	ENDFOR
+	RETURN retbyte
+}
+FOR j := 0 TO 7
+	FOR bb := 0 to 7
+		IF k[j*8+bb]
+			dst.qword[j].byte[bb] := affine_byte(A.qword[j], x.qword[j].byte[bb], b)
+		ELSE
+			dst.qword[j].byte[bb] := src.qword[j].byte[bb]
+		FI
+	ENDFOR
 ENDFOR
-dst[MAX:256] := 0
+dst[MAX:512] := 0
 	</operation>
-	<instruction name='vpermps' form='ymm, ymm, ymm'/>
+	
+	<instruction name='VGF2P8AFFINEQB' form='zmm {k}, zmm, zmm, imm8' xed=''/>
 	<header>immintrin.h</header>
 </intrinsic>
   '''

@@ -135,11 +135,14 @@ class Slice:
   def get_value(self, env):
     bitwidth = self.hi_idx - self.lo_idx + 1
     total_bitwidth = env.get_type(self.var).bitwidth
+    if not (self.lo_idx >= 0 and
+        self.lo_idx <= self.hi_idx and
+        self.hi_idx < total_bitwidth):
+      print(self.var, self.lo_idx, self.hi_idx)
     assert (self.lo_idx >= 0 and
         self.lo_idx <= self.hi_idx and
         self.hi_idx < total_bitwidth)
     val = slice_bits(env.get_value(self.var), self.lo_idx, self.hi_idx+1)
-    # restrict the bitwidth
     val = Bits(uint=val.uint, length=bitwidth)
     return val
 
@@ -167,17 +170,32 @@ def binary_op(op, trunc=False, signed=True, get_bitwidth=lambda a, b: a.length):
 
 def binary_sub(a, b):
   mask = (1 << b.length) - 1
-  b_comp = ((1<<b.length) - b.uint)
-  c = Bits(uint=(a.uint + b_comp) & mask, length=get_max_arg_width(a,b))
+  b_neg = ((1<<b.length) - b.uint)
+  c = Bits(uint=(a.uint + b_neg) & mask, length=get_max_arg_width(a,b))
   return c
 
 def binary_neg(a):
   mask = (1 << a.length) - 1
-  a_comp = ((1<<a.length) - a.uint)
+  a_neg = ((1<<a.length) - a.uint)
+  return Bits(uint=a_neg & mask, length=a.length)
+
+def binary_complement(a):
+  mask = (1 << a.length) - 1
+  a_comp = ((1<<a.length) - a.uint - 1)
   return Bits(uint=a_comp & mask, length=a.length)
 
 def binary_shift(op):
-  return lambda a, b: op(a, b.int)
+  return lambda a, b : op(a, b.uint)
+
+def binary_lshift(a, b):
+  bitwidth = max(a.length, min(max_vl, b.uint+1))
+  mask = (1 << bitwidth)-1
+  if b.uint <= max_vl:
+    c = a.uint << b.uint
+    c &= mask
+  else:
+    c = 0
+  return Bits(uint=c, length=bitwidth)
 
 def unary_op(op, signed=True):
   def impl(a):
@@ -221,7 +239,7 @@ binary_op_impls = {
     ('!=', True): binary_op(operator.ne),
     ('>>', True): binary_shift(operator.rshift),
     #('<<', True): binary_shift(operator.lshift),
-    ('<<', True): binary_op(operator.lshift, signed=False),
+    ('<<', True): binary_lshift,
 
     ('AND', True): binary_op(operator.and_, signed=False),
     ('OR', True): binary_op(operator.or_, signed=False, get_bitwidth=get_max_arg_width),
@@ -237,9 +255,9 @@ binary_op_impls = {
     ('<', False): binary_op(operator.lt),
     ('<=', False): binary_op(operator.le),
     ('%', False): binary_op(operator.imod),
-    ('<<', False): binary_op(operator.lshift, signed=False),
+    ('<<', False): binary_lshift,
     ('<<<', False): binary_shift(rol), # is this correct??
-    ('>>', False): binary_shift(operator.rshift),
+    ('>>', False): binary_shift(operator.rshift), # what about the signedness???
 
     ('AND', False): binary_op(operator.and_, signed=False),
     ('&', False): binary_op(operator.and_, signed=False),
@@ -257,7 +275,7 @@ unary_op_impls = {
 
     ('NOT', False): unary_op(operator.not_, signed=False),
     ('-', False): binary_neg,
-    ('~', False): unary_op(lambda x: ~x),
+    ('~', False): binary_complement,
     }
 
 def get_signed_max(bitwidth):
@@ -481,7 +499,6 @@ def interpret_update(update, env):
 
   # TODO: refactor this shit out
   if type(update.lhs) == Var and not env.has(update.lhs.name):
-    assert not env.has(update.lhs.name)
     env.define(update.lhs.name, rhs_type)
     assert env.has(update.lhs.name)
 
@@ -549,7 +566,6 @@ def interpret_binary_expr(expr, env):
 
   impl_sig = expr.op, is_float(a_type)
   impl = binary_op_impls[impl_sig]
-  print('EXPR=',expr)
   result = impl(a, b)
   return result, a_type._replace(bitwidth=result.length)
 
