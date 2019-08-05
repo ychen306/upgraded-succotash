@@ -12,6 +12,9 @@ num_skipped = 0
 supported_insts = set()
 skipped_insts = set()
 
+num_ok = 0
+num_interpreted = 0
+
 for intrin in data_root.iter('intrinsic'):
   cpuid = intrin.find('CPUID')
   sema = intrin.find('operation') 
@@ -95,8 +98,10 @@ for intrin in data_root.iter('intrinsic'):
       #if 'ELSE IF' in sema.text:
       #  continue
       spec = get_spec_from_xml(intrin)
-      ok, new_spec = configure_spec(spec)
-      print('\t',ok)
+      ok, compiled, new_spec = configure_spec(spec)
+      num_interpreted += compiled
+      num_ok += ok
+      print('\t',ok, num_ok,'/', num_interpreted)
       supported_insts.add(inst_form)
       num_parsed += 1
     except SyntaxError:

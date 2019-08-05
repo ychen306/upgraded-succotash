@@ -8,7 +8,8 @@ import itertools
 # these operators are ambiguously defined (so far as signedness is concerned)
 configurable_op = {
     '<', '<=',
-    '>', '>='
+    '>', '>=',
+    '*', '+', '-',
     }
 
 def configure_spec(spec):
@@ -20,12 +21,12 @@ def configure_spec(spec):
   '''
   ok, compiled = fuzz_intrinsic(spec)
   if not compiled:
-    # if we can't even compile code using this intrinsic
-    # we don't have groundtruth
-    return False, spec
+    # we don't have the groundtruth
+    #  if we can't even compile code using this intrinsic
+    return False, False, spec
 
   if ok: # already correct spec
-    return True, spec
+    return True, True, spec
 
   configurable_exprs = [expr 
       for expr in spec.binary_exprs if expr.op in configurable_op]
@@ -39,8 +40,8 @@ def configure_spec(spec):
     new_spec = spec._replace(configs=configs)
     ok, _ = fuzz_intrinsic(new_spec)
     if ok:
-      return True, new_spec
-  return False, spec
+      return True, True, new_spec
+  return False, True, spec
 
 if __name__ == '__main__':
   import sys
@@ -48,25 +49,26 @@ if __name__ == '__main__':
   from manual_parser import get_spec_from_xml
 
   sema = '''
-<intrinsic tech='MMX' rettype='__m64' name='_m_pcmpgtb'>
+<intrinsic tech='MMX' rettype='__m64' name='_m_psubusb'>
+	<type>Floating Point</type>
 	<type>Integer</type>
 	<CPUID>MMX</CPUID>
-	<category>Compare</category>
+	<category>Arithmetic</category>
 	<parameter varname='a' type='__m64'/>
 	<parameter varname='b' type='__m64'/>
-	<description>Compare packed 8-bit integers in "a" and "b" for greater-than, and store the results in "dst".</description>
+	<description>Subtract packed unsigned 8-bit integers in "b" from packed unsigned 8-bit integers in "a" using saturation, and store the results in "dst".</description>
 	<operation>
 FOR j := 0 to 7
 	i := j*8
-	dst[i+7:i] := ( a[i+7:i] &gt; b[i+7:i] ) ? 0xFF : 0
+	dst[i+7:i] := Saturate_To_UnsignedInt8(a[i+7:i] - b[i+7:i])	
 ENDFOR
 	</operation>
-	<instruction name='pcmpgtb' form='mm, mm'/>
+	<instruction name='psubusb' form='mm, mm'/>
 	<header>mmintrin.h</header>
 </intrinsic>
   '''
 
   intrin_node = ET.fromstring(sema)
   spec = get_spec_from_xml(intrin_node)
-  ok, new_spec = configure_spec(spec)
-  print(ok)
+  ok, compiled, new_spec = configure_spec(spec)
+  print(ok, compiled)

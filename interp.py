@@ -166,6 +166,11 @@ def get_value(v, env):
     return v.get_value(env)
   return v
 
+def binary_float_cmp(op):
+  def impl(a, b, _=None):
+    return Bits(uint=op(a.uint, b.uint), length=1)
+  return impl
+
 def binary_op(op, trunc=False, signed=True, get_bitwidth=lambda a, b: a.length):
   def impl(a, b, signed_override=signed):
     bitwidth = get_bitwidth(a, b)
@@ -180,10 +185,14 @@ def binary_op(op, trunc=False, signed=True, get_bitwidth=lambda a, b: a.length):
       return Bits(uint=c, length=bitwidth)
   return impl
 
-def binary_sub(a, b):
-  mask = (1 << b.length) - 1
-  b_neg = ((1<<b.length) - b.uint)
-  c = Bits(uint=(a.uint + b_neg) & mask, length=get_max_arg_width(a,b))
+def binary_sub(a, b, signed=False):
+  if signed:
+    return Bits(int=a.int-b.int, length=get_total_arg_width(a,b))
+
+  bitwidth = get_total_arg_width(a,b)
+  mask = (1 << bitwidth) - 1
+  b_neg = ((1<<bitwidth) - b.uint)
+  c = Bits(uint=(a.uint + b_neg) & mask, length=bitwidth)
   return c
 
 def binary_neg(a):
@@ -199,7 +208,7 @@ def binary_complement(a):
 def binary_shift(op):
   return lambda a, b : op(a, b.uint)
 
-def binary_lshift(a, b):
+def binary_lshift(a, b, _=None):
   bitwidth = max(a.length, min(max_vl, b.uint+1))
   mask = (1 << bitwidth)-1
   if b.uint <= max_vl:
@@ -225,7 +234,7 @@ def unary_float_op(op):
   return impl
 
 def binary_float_op(op):
-  def impl(a, b):
+  def impl(a, b, _=None):
     bitwidth = a.length
     return Bits(float=op(a.float,b.float), length=bitwidth)
   return impl
@@ -244,10 +253,10 @@ binary_op_impls = {
     ('-', True): binary_float_op(operator.sub),
     ('*', True): binary_float_op(operator.mul),
     ('/', True): binary_float_op(operator.truediv),
-    ('<', True): binary_float_op(operator.lt),
-    ('<=', True): binary_float_op(operator.le),
-    ('>', True): binary_float_op(operator.gt),
-    ('>=', True): binary_float_op(operator.ge),
+    ('<', True): binary_float_cmp(operator.lt),
+    ('<=', True): binary_float_cmp(operator.le),
+    ('>', True): binary_float_cmp(operator.gt),
+    ('>=', True): binary_float_cmp(operator.ge),
     ('!=', True): binary_op(operator.ne),
     ('>>', True): binary_shift(operator.rshift),
     #('<<', True): binary_shift(operator.lshift),
@@ -282,10 +291,12 @@ binary_op_impls = {
 
 # mapping <op, is_float?> -> impl
 unary_op_impls = {
-    ('NOT', True): unary_op(operator.not_, signed=False),
+    #('NOT', True): unary_op(operator.not_, signed=False),
+    ('NOT', True): binary_complement,
     ('-', True): unary_float_op(operator.neg),
 
-    ('NOT', False): unary_op(operator.not_, signed=False),
+    #('NOT', False): unary_op(operator.not_, signed=False),
+    ('NOT', False): binary_complement,
     ('-', False): binary_neg,
     ('~', False): binary_complement,
     }
@@ -294,7 +305,7 @@ def get_signed_max(bitwidth):
   return (1<<(bitwidth-1))-1
 
 def get_signed_min(bitwidth):
-  return -get_signed_max(bitwidth)
+  return -get_signed_max(bitwidth)-1
 
 def get_unsigned_max(bitwidth):
   return (1<<bitwidth)-1
@@ -563,8 +574,8 @@ def interpret_binary_expr(expr, env):
   a, a_type = evaluate_expr(expr.a, env)
   # special case for expressions that can be short-cirtuited
   if expr.op == 'AND':
-    if not(a.int):
-      return Bits(int=0, length=32), IntegerType(32)
+    if not a.uint:
+      return Bits(int=0, length=a.length), a_type
 
   b, b_type = evaluate_expr(expr.b, env)
 

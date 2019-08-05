@@ -103,6 +103,7 @@ def gen_rand_data(outf, name, typename):
     c_type = 'float' if ty.is_float else 'double'
     num_floats = ty.bitwidth // float_size
     floats = [random.random() for _ in range(num_floats)]
+    print(floats)
     outf.write('%s %s_aux[%d] = { %s };\n' % (
       c_type, name, num_floats, ','.join(map(str, floats))
       ))
@@ -151,7 +152,7 @@ def emit_print(outf, var, typename):
     elif ty.is_double:
       outf.write('printf("%%lf\\n", %s);\n' % var)
     else:
-      outf.write('printf("%%lu\\n", (unsigned long)%s);\n' % var)
+      outf.write('printf("%%lu\\n", %s);\n' % var)
 
 
 counter = 0
@@ -308,25 +309,19 @@ if __name__ == '__main__':
   from manual_parser import get_spec_from_xml
 
   sema = '''
-<intrinsic tech='MMX' rettype='__m64' name='_mm_slli_pi16'>
-	<type>Integer</type>
-	<CPUID>MMX</CPUID>
-	<category>Shift</category>
-	<parameter varname='a' type='__m64'/>
-	<parameter varname="imm8" type='int'/>
-	<description>Shift packed 16-bit integers in "a" left by "imm8" while shifting in zeros, and store the results in "dst". </description>
+<intrinsic tech='SSE' vexEq='TRUE' rettype='__m128' name='_mm_cmpnlt_ss'>
+	<type>Floating Point</type>
+	<CPUID>SSE</CPUID>
+	<category>Compare</category>
+	<parameter varname='a' type='__m128' />
+	<parameter varname='b' type='__m128' />
+	<description>Compare the lower single-precision (32-bit) floating-point elements in "a" and "b" for not-less-than, store the result in the lower element of "dst", and copy the upper 3 packed elements from "a" to the upper elements of "dst".</description>
 	<operation>
-FOR j := 0 to 3
-	i := j*16
-	IF imm8[7:0] &gt; 15
-		dst[i+15:i] := 0
-	ELSE
-		dst[i+15:i] := ZeroExtend(a[i+15:i] &lt;&lt; imm8[7:0])
-	FI
-ENDFOR
+dst[31:0] := (!( a[31:0] &lt; b[31:0] )) ? 0xffffffff : 0
+dst[127:32] := a[127:32]
 	</operation>
-	<instruction name='psllw' form='mm, imm'/>
-	<header>mmintrin.h</header>
+	<instruction name='cmpss' form='xmm, xmm, imm'/>
+	<header>xmmintrin.h</header>
 </intrinsic>
   '''
   intrin_node = ET.fromstring(sema)
