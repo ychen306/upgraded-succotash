@@ -8,10 +8,6 @@ from interp import interpret
 from bit_util import *
 import math
 
-'''
-TODO: handle parameters named 'imm8..' specially
-'''
-
 src_path = os.path.dirname(os.path.abspath(__file__))
 
 load_intrinsics = {
@@ -175,6 +171,12 @@ def fuzz_intrinsic_once(outf, spec):
   out_params = []
   out_param_types = []
   for param in spec.params:
+    # special case for parameters named imm8
+    if param.name == 'imm8':
+      byte = random.randint(0, 255)
+      c_vars.append(str(byte))
+      arg_vals.append(Bits(uint=byte, length=8))
+      continue
     c_var = get_temp_name()
     arg_val = gen_rand_data(outf, c_var, param.type)
     c_vars.append(c_var)
@@ -306,29 +308,25 @@ if __name__ == '__main__':
   from manual_parser import get_spec_from_xml
 
   sema = '''
-<intrinsic tech='AVX-512' rettype='__mmask32' name='_mm256_bitshuffle_epi64_mask'>
+<intrinsic tech='MMX' rettype='__m64' name='_mm_slli_pi16'>
 	<type>Integer</type>
-	<type>Mask</type>
-	<CPUID>AVX512_BITALG</CPUID>
-	<CPUID>AVX512VL</CPUID>
-	<category>Bit Manipulation</category>
-	<parameter varname='b' type='__m256i'/>
-	<parameter varname='c' type='__m256i'/>
-	<description>
-		Gather 64 bits from "b" using selection bits in "c". For each 64-bit element in "b", gather 8 bits from the 64-bit element in "b" at 8 bit position controlled by the 8 corresponding 8-bit elements of "c", and store the result in the corresponding 8-bit element of "dst".
-	</description>
+	<CPUID>MMX</CPUID>
+	<category>Shift</category>
+	<parameter varname='a' type='__m64'/>
+	<parameter varname="imm8" type='int'/>
+	<description>Shift packed 16-bit integers in "a" left by "imm8" while shifting in zeros, and store the results in "dst". </description>
 	<operation>
-FOR i := 0 to 3 //Qword
-	FOR j := 0 to 7 // Byte
-		m := c.qword[i].byte[j] &amp; 0x3F
-		dst[i*8+j] := b.qword[i].bit[m]
-	ENDFOR
+FOR j := 0 to 3
+	i := j*16
+	IF imm8[7:0] &gt; 15
+		dst[i+15:i] := 0
+	ELSE
+		dst[i+15:i] := ZeroExtend(a[i+15:i] &lt;&lt; imm8[7:0])
+	FI
 ENDFOR
-dst[MAX:32] := 0
 	</operation>
-	
-	<instruction name='VPSHUFBITQMB' form='k1 {k2}, ymm, ymm' xed=''/>
-	<header>immintrin.h</header>
+	<instruction name='psllw' form='mm, imm'/>
+	<header>mmintrin.h</header>
 </intrinsic>
   '''
   intrin_node = ET.fromstring(sema)
