@@ -92,16 +92,16 @@ for intrin in data_root.iter('intrinsic'):
     num_skipped += 1
     continue
 
-  print(intrin.attrib['name'], cpuid_text)
+  print(intrin.attrib['name'], cpuid_text, flush=True)
   if inst is not None and sema is not None:
     try:
       #if 'ELSE IF' in sema.text:
       #  continue
       spec = get_spec_from_xml(intrin)
       ok, compiled, new_spec = configure_spec(spec)
-      num_interpreted += compiled
+      num_interpreted += can_compiled
       num_ok += ok
-      print('\t',ok, num_ok,'/', num_interpreted)
+      print('\t',ok, num_ok,'/', num_interpreted, flush=True)
       supported_insts.add(inst_form)
       num_parsed += 1
     except SyntaxError:

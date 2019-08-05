@@ -175,7 +175,6 @@ def binary_op(op, trunc=False, signed=True, get_bitwidth=lambda a, b: a.length):
   def impl(a, b, signed_override=signed):
     bitwidth = get_bitwidth(a, b)
     mask = (1 << bitwidth)-1
-    #return Bits(int=op(a.int, b.int), length=bitwidth)
     if signed_override:
       return Bits(int=op(a.int, b.int), length=bitwidth)
     else:
@@ -275,7 +274,7 @@ binary_op_impls = {
     ('>=', False): binary_op(operator.ge),
     ('<', False): binary_op(operator.lt),
     ('<=', False): binary_op(operator.le),
-    ('%', False): binary_op(operator.imod),
+    ('%', False): binary_op(operator.mod, signed=True),
     ('<<', False): binary_lshift,
     ('<<<', False): binary_shift(rol), # is this correct??
     ('>>', False): binary_shift(operator.rshift), # what about the signedness???

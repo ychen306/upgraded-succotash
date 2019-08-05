@@ -103,7 +103,6 @@ def gen_rand_data(outf, name, typename):
     c_type = 'float' if ty.is_float else 'double'
     num_floats = ty.bitwidth // float_size
     floats = [random.random() for _ in range(num_floats)]
-    print(floats)
     outf.write('%s %s_aux[%d] = { %s };\n' % (
       c_type, name, num_floats, ','.join(map(str, floats))
       ))
@@ -309,19 +308,25 @@ if __name__ == '__main__':
   from manual_parser import get_spec_from_xml
 
   sema = '''
-<intrinsic tech='SSE' vexEq='TRUE' rettype='__m128' name='_mm_cmpnlt_ss'>
+<intrinsic tech='SSE3' vexEq='TRUE' rettype='__m128' name='_mm_addsub_ps'>
 	<type>Floating Point</type>
-	<CPUID>SSE</CPUID>
-	<category>Compare</category>
-	<parameter varname='a' type='__m128' />
-	<parameter varname='b' type='__m128' />
-	<description>Compare the lower single-precision (32-bit) floating-point elements in "a" and "b" for not-less-than, store the result in the lower element of "dst", and copy the upper 3 packed elements from "a" to the upper elements of "dst".</description>
+	<CPUID>SSE3</CPUID>
+	<category>Arithmetic</category>
+	<parameter varname='a' type='__m128'/>
+	<parameter varname='b' type='__m128'/>
+	<description>Alternatively add and subtract packed single-precision (32-bit) floating-point elements in "a" to/from packed elements in "b", and store the results in "dst".</description>
 	<operation>
-dst[31:0] := (!( a[31:0] &lt; b[31:0] )) ? 0xffffffff : 0
-dst[127:32] := a[127:32]
+FOR j := 0 to 3
+	i := j*32
+	IF (j % 2 == 0)
+		dst[i+31:i] := a[i+31:i] - b[i+31:i]
+	ELSE
+		dst[i+31:i] := a[i+31:i] + b[i+31:i]
+	FI
+ENDFOR
 	</operation>
-	<instruction name='cmpss' form='xmm, xmm, imm'/>
-	<header>xmmintrin.h</header>
+	<instruction name='addsubps' form='xmm, xmm'/>
+	<header>pmmintrin.h</header>
 </intrinsic>
   '''
   intrin_node = ET.fromstring(sema)
