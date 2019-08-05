@@ -306,31 +306,29 @@ if __name__ == '__main__':
   from manual_parser import get_spec_from_xml
 
   sema = '''
-
-<intrinsic tech='SSE' rettype='__m64' name='_mm_shuffle_pi16'>
+<intrinsic tech='AVX-512' rettype='__mmask32' name='_mm256_bitshuffle_epi64_mask'>
 	<type>Integer</type>
-	<CPUID>SSE</CPUID>
-	<category>Swizzle</category>
-	<parameter varname='a' type='__m64' />
-	<parameter varname="imm8" type='int' />
-	<description>Shuffle 16-bit integers in "a" using the control in "imm8", and store the results in "dst".</description>
+	<type>Mask</type>
+	<CPUID>AVX512_BITALG</CPUID>
+	<CPUID>AVX512VL</CPUID>
+	<category>Bit Manipulation</category>
+	<parameter varname='b' type='__m256i'/>
+	<parameter varname='c' type='__m256i'/>
+	<description>
+		Gather 64 bits from "b" using selection bits in "c". For each 64-bit element in "b", gather 8 bits from the 64-bit element in "b" at 8 bit position controlled by the 8 corresponding 8-bit elements of "c", and store the result in the corresponding 8-bit element of "dst".
+	</description>
 	<operation>
-DEFINE SELECT4(src, control) {
-	CASE(control[1:0]) OF
-	0:	tmp[15:0] := src[15:0]
-	1:	tmp[15:0] := src[31:16]
-	2:	tmp[15:0] := src[47:32]
-	3:	tmp[15:0] := src[63:48]
-	ESAC
-	RETURN tmp[15:0]
-}
-dst[15:0] := SELECT4(a[63:0], imm8[1:0])
-dst[31:16] := SELECT4(a[63:0], imm8[3:2])
-dst[47:32] := SELECT4(a[63:0], imm8[5:4])
-dst[63:48] := SELECT4(a[63:0], imm8[7:6])
+FOR i := 0 to 3 //Qword
+	FOR j := 0 to 7 // Byte
+		m := c.qword[i].byte[j] &amp; 0x3F
+		dst[i*8+j] := b.qword[i].bit[m]
+	ENDFOR
+ENDFOR
+dst[MAX:32] := 0
 	</operation>
-	<instruction name='pshufw' form='mm, mm, imm'/>
-	<header>xmmintrin.h</header>
+	
+	<instruction name='VPSHUFBITQMB' form='k1 {k2}, ymm, ymm' xed=''/>
+	<header>immintrin.h</header>
 </intrinsic>
   '''
   intrin_node = ET.fromstring(sema)
