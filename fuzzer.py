@@ -306,21 +306,31 @@ if __name__ == '__main__':
   from manual_parser import get_spec_from_xml
 
   sema = '''
-<intrinsic tech='MMX' rettype='__m64' name='_m_pcmpgtb'>
+
+<intrinsic tech='SSE' rettype='__m64' name='_mm_shuffle_pi16'>
 	<type>Integer</type>
-	<CPUID>MMX</CPUID>
-	<category>Compare</category>
-	<parameter varname='a' type='__m64'/>
-	<parameter varname='b' type='__m64'/>
-	<description>Compare packed 8-bit integers in "a" and "b" for greater-than, and store the results in "dst".</description>
+	<CPUID>SSE</CPUID>
+	<category>Swizzle</category>
+	<parameter varname='a' type='__m64' />
+	<parameter varname="imm8" type='int' />
+	<description>Shuffle 16-bit integers in "a" using the control in "imm8", and store the results in "dst".</description>
 	<operation>
-FOR j := 0 to 7
-	i := j*8
-	dst[i+7:i] := ( a[i+7:i] &gt; b[i+7:i] ) ? 0xFF : 0
-ENDFOR
+DEFINE SELECT4(src, control) {
+	CASE(control[1:0]) OF
+	0:	tmp[15:0] := src[15:0]
+	1:	tmp[15:0] := src[31:16]
+	2:	tmp[15:0] := src[47:32]
+	3:	tmp[15:0] := src[63:48]
+	ESAC
+	RETURN tmp[15:0]
+}
+dst[15:0] := SELECT4(a[63:0], imm8[1:0])
+dst[31:16] := SELECT4(a[63:0], imm8[3:2])
+dst[47:32] := SELECT4(a[63:0], imm8[5:4])
+dst[63:48] := SELECT4(a[63:0], imm8[7:6])
 	</operation>
-	<instruction name='pcmpgtb' form='mm, mm'/>
-	<header>mmintrin.h</header>
+	<instruction name='pshufw' form='mm, mm, imm'/>
+	<header>xmmintrin.h</header>
 </intrinsic>
   '''
   intrin_node = ET.fromstring(sema)

@@ -685,7 +685,7 @@ def interpret_match(match_stmt, env):
   cases = {}
   for case in match_stmt.cases:
     case_val, _ = evaluate_expr(case.val, env)
-    if case_val.int == val.int:
+    if case_val.uint == val.uint:
       for stmt in case.stmts:
         if type(stmt) == Break:
           break
