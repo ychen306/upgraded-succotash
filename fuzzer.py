@@ -11,8 +11,8 @@ import math
 src_path = os.path.dirname(os.path.abspath(__file__))
 
 load_intrinsics = {
-    '_m512i': '_mm512_loadu_si32',
-    '__m512i': '_mm512_loadu_si32',
+    '_m512i': '_mm512_loadu_si512',
+    '__m512i': '_mm512_loadu_si512',
     '__m256i': '_mm256_loadu_si256',
     '__m128i': '_mm_loadu_si128',
 
@@ -60,11 +60,11 @@ printers = {
 def emit_load(outf, dst, src, typename):
   if typename in load_intrinsics:
     load_intrinsic = load_intrinsics[typename]
-    outf.write('%s %s = %s((%s *)&%s);\n' % (
+    outf.write('%s %s = %s((%s *)%s);\n' % (
       typename, dst, load_intrinsic, typename, src
       ))
   else:
-    outf.write('%s %s = *(%s *)(&%s);\n' % (
+    outf.write('%s %s = *(%s *)(%s);\n' % (
       typename, dst, typename, src
       ))
 
@@ -151,7 +151,7 @@ def emit_print(outf, var, typename):
     elif ty.is_double:
       outf.write('printf("%%lf\\n", %s);\n' % var)
     else:
-      outf.write('printf("%%lu\\n", %s);\n' % var)
+      outf.write('printf("%%lu\\n", (unsigned long)%s);\n' % var)
 
 
 counter = 0
@@ -184,7 +184,7 @@ def fuzz_intrinsic_once(outf, spec):
     arg_vals.append(arg_val)
     if param.type.endswith('*'):
       out_params.append(c_var)
-      out_param_types.append(param.type)
+      out_param_types.append(param.type[:-1].strip())
 
   # call the intrinsic
   has_return_val = spec.rettype != 'void'
@@ -196,14 +196,14 @@ def fuzz_intrinsic_once(outf, spec):
     # print the result
     emit_print(outf, ret_var, spec.rettype)
   else:
-    outf.write('%%s(%s);\n' % (
+    outf.write('%s(%s);\n' % (
       spec.intrin, ','.join(c_vars)
       ))
 
   out_types = []
 
   for param, param_type in zip(out_params, out_param_types):
-    emit_print(outf, param, param_type)
+    emit_print(outf, param, param_type+'*')
 
   out, out_params = interpret(spec, arg_vals)
   if has_return_val:
@@ -243,7 +243,9 @@ def fuzz_intrinsic(spec, num_tests=10):
   spec -> (spec correct, can compile)
   '''
   interpreted = []
-  with NamedTemporaryFile(suffix='.c', mode='w') as outf, NamedTemporaryFile(delete=False) as exe:
+  exe = NamedTemporaryFile(delete=False)
+  exe.close()
+  with NamedTemporaryFile(suffix='.c', mode='w') as outf:
     outf.write('''
 #include <emmintrin.h> 
 #include <immintrin.h>
@@ -257,7 +259,7 @@ def fuzz_intrinsic(spec, num_tests=10):
 #include <stdio.h>
 #include "printers.h"
 
-#define __int64_t __int64;
+#define __int64_t __int64
 #define __int64 long long
 
 int main() {
@@ -275,7 +277,7 @@ int main() {
     # TODO: add CPUIDs 
     try:
       subprocess.check_output(
-          'cc %s -o %s -I%s %s/printers.o >/dev/null 2>/dev/null -mavx -mavx2 -mfma' % (
+          'gcc %s -o %s -I%s %s/printers.o >/dev/null 2>/dev/null -mavx -mavx2 -march=native -mfma' % (
             outf.name, exe.name, src_path, src_path),
           shell=True)
     except subprocess.CalledProcessError:
@@ -308,23 +310,22 @@ if __name__ == '__main__':
   import xml.etree.ElementTree as ET
   from manual_parser import get_spec_from_xml
 
+  # _mm512_mask_permutexvar_epi32
   sema = '''
-<intrinsic tech='SSSE3' rettype='__m64' name='_mm_maddubs_pi16'>
+<intrinsic tech="Other" rettype='unsigned __int64' name='_mulx_u64'>
 	<type>Integer</type>
-	<CPUID>SSSE3</CPUID>
+	<CPUID>BMI2</CPUID>
 	<category>Arithmetic</category>
-	<parameter varname='a' type='__m64'/>
-	<parameter varname='b' type='__m64'/>
-	<description>Vertically multiply each unsigned 8-bit integer from "a" with the corresponding signed 8-bit integer from "b", producing intermediate signed 16-bit integers. Horizontally add adjacent pairs of intermediate signed 16-bit integers, and pack the saturated results in "dst".
-	</description>
+	<parameter type='unsigned __int64' varname='a' />
+	<parameter type='unsigned __int64' varname='b' />
+	<parameter type='unsigned __int64*' varname='hi' />
+	<description>Multiply unsigned 64-bit integers "a" and "b", store the low 64-bits of the result in "dst", and store the high 64-bits in "hi". This does not read or write arithmetic flags.</description>
 	<operation>
-FOR j := 0 to 3
-	i := j*16
-	dst[i+15:i] := Saturate_To_Int16( a[i+15:i+8]*b[i+15:i+8] + a[i+7:i]*b[i+7:i] )
-ENDFOR
+dst[63:0] := (a * b)[63:0]
+hi[63:0] := (a * b)[127:64]
 	</operation>
-	<instruction name='pmaddubsw' form='mm, mm'/>
-	<header>tmmintrin.h</header>
+	<instruction name='mulx' form='r64, r64, m64' />
+	<header>immintrin.h</header>
 </intrinsic>
   '''
   intrin_node = ET.fromstring(sema)
