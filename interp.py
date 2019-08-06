@@ -110,10 +110,9 @@ class Slice:
     '''
     bitwidth = env.get_type(self.var).bitwidth
 
-    if self.lo_idx > self.hi_idx:
-      return
-    if self.hi_idx >= bitwidth:
-      # fingers crossed that this is one of thos dst[MAX:..] = 0 expressions
+    hi_idx = min(self.hi_idx, bitwidth-1)
+
+    if self.lo_idx > hi_idx:
       return
 
     if rhs == None: # undefined
@@ -122,7 +121,7 @@ class Slice:
     old_val = env.get_value(self.var)
     old_bits = BitArray(uint=old_val.uint, length=old_val.length)
 
-    update_width = self.hi_idx - self.lo_idx + 1
+    update_width = hi_idx - self.lo_idx + 1
 
     if update_width < rhs.length:
       # trunc rhs
@@ -130,13 +129,13 @@ class Slice:
 
     extend = zero_extend if self.zero_extending else sign_extend
     if not (self.lo_idx >= 0 and
-        self.lo_idx <= self.hi_idx and
-        self.hi_idx < bitwidth):
-      print(self.lo_idx, self.hi_idx, bitwidth)
+        self.lo_idx <= hi_idx and
+        hi_idx < bitwidth):
+      print(self.lo_idx, hi_idx, bitwidth)
     assert (self.lo_idx >= 0 and
-        self.lo_idx <= self.hi_idx and
-        self.hi_idx < bitwidth)
-    update_bits(old_bits, self.lo_idx, self.hi_idx+1, extend(rhs, self.hi_idx-self.lo_idx+1))
+        self.lo_idx <= hi_idx and
+        hi_idx < bitwidth)
+    update_bits(old_bits, self.lo_idx, hi_idx+1, extend(rhs, hi_idx-self.lo_idx+1))
     new_val = Bits(uint=old_bits.uint, length=old_bits.length)
     env.set_value(self.var, new_val)
 
@@ -819,8 +818,8 @@ def evaluate_expr(expr, env):
   '''
   similar to interpret_expr, except we deref a slice to a concrete value
   '''
-  slice_or_val, type = interpret_expr(expr, env)
-  return get_value(slice_or_val, env), type
+  slice_or_val, ty = interpret_expr(expr, env)
+  return get_value(slice_or_val, env), ty
 
 def interpret(spec, args=None):
   # bring the arguments into scope

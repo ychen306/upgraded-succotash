@@ -170,9 +170,10 @@ def fuzz_intrinsic_once(outf, spec):
   arg_vals = []
   out_params = []
   out_param_types = []
-  for param in spec.params:
-    # special case for parameters named imm8
-    if param.name == 'imm8':
+  inst_form = spec.inst_form.split()
+  for i, param in enumerate(spec.params):
+    # special case for immediate
+    if i < len(inst_form) and inst_form[i] == 'imm':
       byte = random.randint(0, 255)
       c_vars.append(str(byte))
       arg_vals.append(Bits(uint=byte, length=8))
@@ -308,28 +309,25 @@ if __name__ == '__main__':
   from manual_parser import get_spec_from_xml
 
   sema = '''
-<intrinsic tech='SSE3' vexEq='TRUE' rettype='__m128' name='_mm_addsub_ps'>
-	<type>Floating Point</type>
-	<CPUID>SSE3</CPUID>
+<intrinsic tech='SSSE3' rettype='__m64' name='_mm_maddubs_pi16'>
+	<type>Integer</type>
+	<CPUID>SSSE3</CPUID>
 	<category>Arithmetic</category>
-	<parameter varname='a' type='__m128'/>
-	<parameter varname='b' type='__m128'/>
-	<description>Alternatively add and subtract packed single-precision (32-bit) floating-point elements in "a" to/from packed elements in "b", and store the results in "dst".</description>
+	<parameter varname='a' type='__m64'/>
+	<parameter varname='b' type='__m64'/>
+	<description>Vertically multiply each unsigned 8-bit integer from "a" with the corresponding signed 8-bit integer from "b", producing intermediate signed 16-bit integers. Horizontally add adjacent pairs of intermediate signed 16-bit integers, and pack the saturated results in "dst".
+	</description>
 	<operation>
 FOR j := 0 to 3
-	i := j*32
-	IF (j % 2 == 0)
-		dst[i+31:i] := a[i+31:i] - b[i+31:i]
-	ELSE
-		dst[i+31:i] := a[i+31:i] + b[i+31:i]
-	FI
+	i := j*16
+	dst[i+15:i] := Saturate_To_Int16( a[i+15:i+8]*b[i+15:i+8] + a[i+7:i]*b[i+7:i] )
 ENDFOR
 	</operation>
-	<instruction name='addsubps' form='xmm, xmm'/>
-	<header>pmmintrin.h</header>
+	<instruction name='pmaddubsw' form='mm, mm'/>
+	<header>tmmintrin.h</header>
 </intrinsic>
   '''
   intrin_node = ET.fromstring(sema)
   spec = get_spec_from_xml(intrin_node)
-  ok = fuzz_intrinsic(spec)
+  ok = fuzz_intrinsic(spec, num_tests=100)
   print(ok)

@@ -99,7 +99,7 @@ for intrin in data_root.iter('intrinsic'):
       #  continue
       spec = get_spec_from_xml(intrin)
       ok, compiled, new_spec = configure_spec(spec)
-      num_interpreted += can_compiled
+      num_interpreted += compiled
       num_ok += ok
       print('\t',ok, num_ok,'/', num_interpreted, flush=True)
       supported_insts.add(inst_form)

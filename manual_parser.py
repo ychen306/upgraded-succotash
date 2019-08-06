@@ -11,6 +11,7 @@ def get_spec_from_xml(node):
     params.append(Parameter(name, type))
   intrin = node.attrib['name']
   inst = node.find('instruction')
+  inst_form = inst.attrib['form']
   assert(inst is not None)
   operation = node.find('operation')
   assert(operation is not None)
@@ -23,4 +24,5 @@ def get_spec_from_xml(node):
       params=params,
       rettype=rettype,
       configs={}, # by default nothing is configured
+      inst_form=inst_form,
       binary_exprs=binary_exprs)

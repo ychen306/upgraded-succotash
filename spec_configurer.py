@@ -9,17 +9,17 @@ import itertools
 configurable_op = {
     '<', '<=',
     '>', '>=',
-    '*', '+', '-',
+    '*', '+', '-'
     }
 
-def configure_spec(spec):
+def configure_spec(spec, num_tests=10, num_iters=32):
   '''
   given a spec, configure its binary operators so that
   the spec conforms with real-world behavior.
 
   return <success?>, <spec>
   '''
-  ok, compiled = fuzz_intrinsic(spec)
+  ok, compiled = fuzz_intrinsic(spec, num_tests)
   if not compiled:
     # we don't have the groundtruth
     #  if we can't even compile code using this intrinsic
@@ -32,7 +32,9 @@ def configure_spec(spec):
       for expr in spec.binary_exprs if expr.op in configurable_op]
   num_configs = len(configurable_exprs)
   config_space = itertools.product(*[(True, False) for _ in range(num_configs)])
-  for encoded_config in config_space:
+  for i, encoded_config in enumerate(config_space):
+    if i >= num_iters:
+      break
     configs = {
         expr.expr_id: signedness 
         for expr, signedness in zip(configurable_exprs, encoded_config)
@@ -49,26 +51,26 @@ if __name__ == '__main__':
   from manual_parser import get_spec_from_xml
 
   sema = '''
-<intrinsic tech='MMX' rettype='__m64' name='_m_psubusb'>
-	<type>Floating Point</type>
+<intrinsic tech='SSSE3' rettype='__m64' name='_mm_maddubs_pi16'>
 	<type>Integer</type>
-	<CPUID>MMX</CPUID>
+	<CPUID>SSSE3</CPUID>
 	<category>Arithmetic</category>
 	<parameter varname='a' type='__m64'/>
 	<parameter varname='b' type='__m64'/>
-	<description>Subtract packed unsigned 8-bit integers in "b" from packed unsigned 8-bit integers in "a" using saturation, and store the results in "dst".</description>
+	<description>Vertically multiply each unsigned 8-bit integer from "a" with the corresponding signed 8-bit integer from "b", producing intermediate signed 16-bit integers. Horizontally add adjacent pairs of intermediate signed 16-bit integers, and pack the saturated results in "dst".
+	</description>
 	<operation>
-FOR j := 0 to 7
-	i := j*8
-	dst[i+7:i] := Saturate_To_UnsignedInt8(a[i+7:i] - b[i+7:i])	
+FOR j := 0 to 3
+	i := j*16
+	dst[i+15:i] := Saturate_To_Int16( a[i+15:i+8]*b[i+15:i+8] + a[i+7:i]*b[i+7:i] )
 ENDFOR
 	</operation>
-	<instruction name='psubusb' form='mm, mm'/>
-	<header>mmintrin.h</header>
+	<instruction name='pmaddubsw' form='mm, mm'/>
+	<header>tmmintrin.h</header>
 </intrinsic>
   '''
 
   intrin_node = ET.fromstring(sema)
   spec = get_spec_from_xml(intrin_node)
-  ok, compiled, new_spec = configure_spec(spec)
+  ok, compiled, new_spec = configure_spec(spec, num_tests=100)
   print(ok, compiled)

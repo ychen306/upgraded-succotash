@@ -29,6 +29,8 @@ Spec = namedtuple('Spec', [
   'intrin', 'inst', 'params',
   'spec', 'rettype', 'binary_exprs',
 
+  'inst_form',
+
   # configuration of binary exprs
   'configs',
   ])
