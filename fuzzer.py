@@ -5,10 +5,42 @@ from tempfile import NamedTemporaryFile
 import os
 import subprocess
 from interp import interpret
+from compiler import compile
 from bit_util import *
 import math
+import z3
+import functools
+import operator
 
 src_path = os.path.dirname(os.path.abspath(__file__))
+
+def check_compiled_spec_with_examples(param_vals, outs, inputs, expected_outs):
+  s = z3.Solver()
+  constraints = []
+  for input, expected in zip(inputs, expected_outs):
+    preconditions = [x_sym == x_conc
+    for x_sym, x_conc in zip(param_vals, input)]
+    postconditions = [y_expected == y
+        for y_expected, y in zip(expected, outs)]
+    constraints.append(
+        z3.Implies(z3.And(preconditions), z3.And(postconditions)))
+  spec_correct = z3.And(constraints)
+  s.add(z3.Not(spec_correct))
+  return s.check() == z3.unsat
+
+
+def line_to_bitvec(line, ty):
+  qwords = list(map(int, line.split()))
+  if ty.bitwidth <= 64:
+    assert len(qwords) == 1
+    [bits] = qwords
+    mask = (1 << ty.bitwidth) - 1
+    return bits & mask
+
+  assert ty.bitwidth % 64 == 0
+  components = [bits << (i * 64) for i, bits in enumerate(qwords)]
+  return functools.reduce(operator.or_, components, 0)
+
 
 load_intrinsics = {
     '_m512i': '_mm512_loadu_si512',
@@ -41,20 +73,20 @@ printers = {
     '__m128i': 'print__m128i',
 
     # single precision floats
-    '__m512': 'print__m512',
-    '__m256': 'print__m256',
-    '__m128': 'print__m128',
-    '_m512': 'print__m512',
-    '_m256': 'print__m256',
-    '_m128': 'print__m128',
+    '__m512': 'print__m512i',
+    '__m256': 'print__m256i',
+    '__m128': 'print__m128i',
+    '_m512': 'print__m512i',
+    '_m256': 'print__m256i',
+    '_m128': 'print__m128i',
 
     # double precision floats
-    '__m512d': 'print__m512d',
-    '__m256d': 'print__m256d',
-    '__m128d': 'print__m128d',
-    '_m512d': 'print__m512d',
-    '_m256d': 'print__m256d',
-    '_m128d': 'print__m128d',
+    '__m512d': 'print__m512i',
+    '__m256d': 'print__m256i',
+    '__m128d': 'print__m128i',
+    '_m512d': 'print__m512i',
+    '_m256d': 'print__m256i',
+    '_m128d': 'print__m128i',
     }
 
 def emit_load(outf, dst, src, typename):
@@ -138,18 +170,18 @@ def emit_print(outf, var, typename):
     # use the predefined printers
     printer = printers[typename]
     if ty.is_float:
-      param_ty = 'float'
+      param_ty = 'unsigned long'
     elif ty.is_double:
-      param_ty = 'double'
+      param_ty = 'unsigned long'
     else:
       param_ty = 'unsigned long'
 
     outf.write('%s((%s *)&%s);\n' % (printer, param_ty, var))
   else:
     if ty.is_float:
-      outf.write('printf("%%f\\n", %s);\n' % var)
+      outf.write('printf("%%u\\n", float2int(%s));\n' % var)
     elif ty.is_double:
-      outf.write('printf("%%lf\\n", %s);\n' % var)
+      outf.write('printf("%%lu\\n", double2long(%s));\n' % var)
     else:
       outf.write('printf("%%lu\\n", (unsigned long)%s);\n' % var)
 
@@ -205,10 +237,7 @@ def fuzz_intrinsic_once(outf, spec):
   for param, param_type in zip(out_params, out_param_types):
     emit_print(outf, param, param_type+'*')
 
-  out, out_params = interpret(spec, arg_vals)
-  if has_return_val:
-    return [out] + out_params, [spec.rettype] + out_param_types
-  return out_params, out_param_types
+  return arg_vals, out_param_types, has_return_val
 
 def get_err(a, b, is_float):
   err = a - b
@@ -238,7 +267,7 @@ def bits_to_vec(bits, typename):
   # integer type
   return bits_to_long_vec(bits)
 
-def fuzz_intrinsic(spec, num_tests=10):
+def fuzz_intrinsic(spec, num_tests=100):
   '''
   spec -> (spec correct, can compile)
   '''
@@ -262,11 +291,39 @@ def fuzz_intrinsic(spec, num_tests=10):
 #define __int64_t __int64
 #define __int64 long long
 
+union float_and_int {
+  float f;
+  unsigned int i;
+};
+
+union double_and_long {
+  double d;
+  unsigned long l;
+};
+
+unsigned int float2int(float f) {
+  union float_and_int x;
+  x.f = f;
+  return x.i;
+}
+
+unsigned long double2long(double d) {
+  union double_and_long x;
+  x.d = d;
+  return x.l;
+}
+
 int main() {
         ''')
-    
+
+    x = []
+    y = []
     for _ in range(num_tests):
-      interpreted.append(fuzz_intrinsic_once(outf, spec))
+      arg_vals, out_param_types, has_return_val = fuzz_intrinsic_once(outf, spec)
+      out_types = [intrinsic_types[ty] for ty in out_param_types]
+      if spec.rettype != 'void':
+        out_types = [intrinsic_types[spec.rettype]] + out_types
+      x.append([val.uint for val in arg_vals])
 
     outf.write('''
   return 0;
@@ -277,59 +334,57 @@ int main() {
     # TODO: add CPUIDs 
     try:
       subprocess.check_output(
-          'gcc %s -o %s -I%s %s/printers.o >/dev/null 2>/dev/null -mavx -mavx2 -march=native -mfma' % (
+          'gcc %s -o %s -I%s %s/printers.o >/dev/null 2>/dev/null  -mavx -mavx2 -march=native -mfma' % (
             outf.name, exe.name, src_path, src_path),
           shell=True)
     except subprocess.CalledProcessError:
       return False, False
 
-    num_outputs_per_intrinsic = len(interpreted[0][0])
+    num_outputs_per_intrinsic = len(out_types)
 
     stdout = subprocess.check_output([exe.name])
     lines = stdout.decode('utf-8').strip().split('\n')
-    assert(len(lines) == len(interpreted) * num_outputs_per_intrinsic)
+    assert(len(lines) == num_tests * num_outputs_per_intrinsic)
 
   os.system('rm '+exe.name)
 
   for i in range(0, len(lines), num_outputs_per_intrinsic):
-    outputs, output_types = interpreted[i // num_outputs_per_intrinsic]
-    for output, output_typename, line in zip(outputs, output_types, lines[i:i+num_outputs_per_intrinsic]):
-      fields = line.strip().split()
-      output_is_float = is_float(intrinsic_types[output_typename])
-      if output_is_float:
-        ref_vec = [float(x) for x in fields]
-      else:
-        ref_vec = [int(x) for x in fields]
-      vec = bits_to_vec(output, output_typename)
-      if not identical_vecs(vec, ref_vec, is_float):
-        return False, True
-  return True, True
+    outputs = []
+    for ty, line in zip(out_types, lines[i:i+num_outputs_per_intrinsic]):
+      outputs.append(line_to_bitvec(line, ty))
+    y.append(outputs)
+
+  param_vals, outs = compile(spec)
+  correct = check_compiled_spec_with_examples(param_vals, outs, x, y)
+
+  return correct, True
 
 if __name__ == '__main__':
   import sys
   import xml.etree.ElementTree as ET
   from manual_parser import get_spec_from_xml
+  from intrinsic_types import IntegerType
 
-  # _mm512_mask_permutexvar_epi32
   sema = '''
-<intrinsic tech='SSE2' vexEq='TRUE' rettype='__m128i' name='_mm_add_epi8'>
+<intrinsic tech="Other" rettype='unsigned __int64' name='_mulx_u64'>
 	<type>Integer</type>
-	<CPUID>SSE2</CPUID>
+	<CPUID>BMI2</CPUID>
 	<category>Arithmetic</category>
-	<parameter varname='a' type='__m128i'/>
-	<parameter varname='b' type='__m128i'/>
-	<description>Add packed 8-bit integers in "a" and "b", and store the results in "dst".</description>
+	<parameter type='unsigned __int64' varname='a' />
+	<parameter type='unsigned __int64' varname='b' />
+	<parameter type='unsigned __int64*' varname='hi' />
+	<description>Multiply unsigned 64-bit integers "a" and "b", store the low 64-bits of the result in "dst", and store the high 64-bits in "hi". This does not read or write arithmetic flags.</description>
 	<operation>
-FOR j := 0 to 15
-	i := j*8
-	dst[i+7:i] := a[i+7:i] + b[i+7:i]
-ENDFOR
+dst[63:0] := (a * b)[63:0]
+hi[63:0] := (a * b)[127:64]
 	</operation>
-	<instruction name='paddb' form='xmm, xmm'/>
-	<header>emmintrin.h</header>
+	<instruction name='mulx' form='r64, r64, m64' />
+	<header>immintrin.h</header>
 </intrinsic>
   '''
   intrin_node = ET.fromstring(sema)
   spec = get_spec_from_xml(intrin_node)
+  #param_vals, outs = compile(spec)
+
   ok = fuzz_intrinsic(spec, num_tests=100)
   print(ok)

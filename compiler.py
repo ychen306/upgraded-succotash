@@ -461,13 +461,19 @@ def compile(spec):
 
   out_params = []
   returns_void = False
+  param_vals = []
   for param in spec.params:
+    is_out_param = False
     if param.type.endswith('*'):
       param_type = intrinsic_types[param.type[:-1].strip()]
       out_params.append(param.name)
+      is_out_param = True
     else:
       param_type = intrinsic_types[param.type]
-    env.define(param.name, type=param_type, value=new_sym_val(param_type))
+    param_val = new_sym_val(param_type)
+    if not is_out_param: 
+      param_vals.append(param_val)
+    env.define(param.name, type=param_type, value=param_val)
   if spec.rettype != 'void':
     rettype = intrinsic_types[spec.rettype]
     env.define('dst', type=rettype, value=new_sym_val(rettype))
@@ -481,12 +487,11 @@ def compile(spec):
       break
     compile_stmt(stmt, env)
 
-  outputs = [env.get_value(out_param) for out_param in out_params]
-  if returns_void:
-    dst = None
-  else:
+  outputs = [z3.simplify(env.get_value(out_param)) for out_param in out_params]
+  if not returns_void:
     dst = z3.simplify(env.get_value('dst'))
-  return dst, outputs
+    outputs = [dst] + outputs
+  return param_vals, outputs
 
 def compile_bit_slice(bit_slice, env, pred):
   lo, _ = compile_expr(bit_slice.lo, env, pred, deref=True)
@@ -902,32 +907,24 @@ ENDFOR
 </intrinsic>
   '''
   sema = '''
-<intrinsic tech="AVX-512" rettype="__m256d" name="_mm256_mask_rsqrt14_pd">
-	<type>Floating Point</type>
-	<CPUID>AVX512VL</CPUID>
-	<CPUID>AVX512F</CPUID>
+<intrinsic tech="Other" rettype='unsigned __int64' name='_mulx_u64'>
+	<type>Integer</type>
+	<CPUID>BMI2</CPUID>
 	<category>Arithmetic</category>
-	<parameter varname="src" type="__m256d"/>
-	<parameter varname="k" type="__mmask8"/>
-	<parameter varname="a" type="__m256d"/>
-	<description>Compute the approximate reciprocal square root of packed double-precision (64-bit) floating-point elements in "a", and store the results in "dst" using writemask "k" (elements are copied from "src" when the corresponding mask bit is not set). The maximum relative error for this approximation is less than 2^-14.</description>
+	<parameter type='unsigned __int64' varname='a' />
+	<parameter type='unsigned __int64' varname='b' />
+	<parameter type='unsigned __int64*' varname='hi' />
+	<description>Multiply unsigned 64-bit integers "a" and "b", store the low 64-bits of the result in "dst", and store the high 64-bits in "hi". This does not read or write arithmetic flags.</description>
 	<operation>
-FOR j := 0 to 3
-	i := j*64
-	IF k[j]
-		dst[i+63:i] := APPROXIMATE(1.0 / SQRT(a[i+63:i]))
-	ELSE
-		dst[i+63:i] := src[i+63:i]
-	FI
-ENDFOR
-dst[MAX:256] := 0
+dst[63:0] := (a * b)[63:0]
+hi[63:0] := (a * b)[127:64]
 	</operation>
-	<instruction name="vrsqrt14pd"/>
+	<instruction name='mulx' form='r64, r64, m64' />
 	<header>immintrin.h</header>
 </intrinsic>
   '''
 
   intrin_node = ET.fromstring(sema)
   spec = get_spec_from_xml(intrin_node)
-  dst, _ = compile(spec)
-  print(dst, dst.size())
+  param_vals, outs = compile(spec)
+  print(param_vals, outs)
