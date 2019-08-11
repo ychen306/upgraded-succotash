@@ -6,12 +6,14 @@ ConcreteType = namedtuple('ConcreteType', ['bitwidth', 'is_float', 'is_double', 
 IntegerType = lambda bw: ConcreteType(bw, False, False, False)
 FloatType = lambda bw: ConcreteType(bw, True, False, False)
 DoubleType = lambda bw: ConcreteType(bw, False, True, False)
-PointerType = lambda ty: ty._replace(is_pointer=True)
 
-max_vl = 256
+max_vl = 512
 
 def is_float(type):
-  return type.is_float or type.is_double
+  return is_literal(type) or type.is_float or type.is_double
+
+def is_literal(type):
+  return type is None
 
 # convert textual types like '_m512i' to ConcreteType
 intrinsic_types = {
@@ -39,9 +41,9 @@ intrinsic_types = {
 
     # masks
     '__mmask8': IntegerType(8),
-    '__mmask16': IntegerType(8),
-    '__mmask32': IntegerType(8),
-    '__mmask64': IntegerType(8),
+    '__mmask16': IntegerType(16),
+    '__mmask32': IntegerType(32),
+    '__mmask64': IntegerType(64),
 
     'float': FloatType(32),
     'double': DoubleType(64),

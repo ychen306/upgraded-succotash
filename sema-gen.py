@@ -3,6 +3,7 @@ from manual_parser import get_spec_from_xml
 import sys
 from interp import interpret
 from spec_configurer import configure_spec
+from compiler import compile
 
 data_f = sys.argv[1]
 data_root = ET.parse(data_f)
@@ -14,6 +15,10 @@ skipped_insts = set()
 
 num_ok = 0
 num_interpreted = 0
+
+skipped = False
+skip_to = '_mm512_popcnt_epi16'
+skip_to = None
 
 for intrin in data_root.iter('intrinsic'):
   cpuid = intrin.find('CPUID')
@@ -41,7 +46,6 @@ for intrin in data_root.iter('intrinsic'):
       'mant' in intrin.attrib['name'] or
       'ord' in intrin.attrib['name'] or
       '4dpwss' in intrin.attrib['name'] or
-      'bextr' in intrin.attrib['name'] or
       intrin.attrib['name'].startswith('_bit') or
       intrin.attrib['name'] in ('_rdpmc', '_rdtsc')):
     continue
@@ -49,8 +53,13 @@ for intrin in data_root.iter('intrinsic'):
   if cat is not None and cat.text in (
       'Elementary Math Functions', 
       'General Support',
-      'Load', 'Store'):
+      'Load', 'Store', 'Special Math Functions'):
     continue
+  if skip_to is not None and not skipped:
+    if intrin.attrib['name'] != skip_to:
+      continue
+    else:
+      skipped = True
   if sema is not None and (
       'MEM' in sema.text or
       'FP16' in sema.text or
@@ -63,6 +72,7 @@ for intrin in data_root.iter('intrinsic'):
       '<<<' in sema.text or
       ' MXCSR ' in sema.text or
       'ZF' in sema.text or
+      'CF' in sema.text or
       'NaN' in sema.text or 
       'CheckFPClass' in sema.text or
       'ROUND' in sema.text or
@@ -92,16 +102,17 @@ for intrin in data_root.iter('intrinsic'):
     num_skipped += 1
     continue
 
-  print(intrin.attrib['name'], cpuid_text, flush=True)
+  print(intrin.attrib['name'], cpuid_text, num_parsed, flush=True)
   if inst is not None and sema is not None:
     try:
       #if 'ELSE IF' in sema.text:
       #  continue
       spec = get_spec_from_xml(intrin)
-      ok, compiled, new_spec = configure_spec(spec)
-      num_interpreted += compiled
-      num_ok += ok
-      print('\t',ok, num_ok,'/', num_interpreted, flush=True)
+      #ok, compiled, new_spec = configure_spec(spec)
+      compile(spec)
+      #num_interpreted += compiled
+      #num_ok += ok
+      #print('\t',ok, num_ok,'/', num_interpreted, flush=True)
       supported_insts.add(inst_form)
       num_parsed += 1
     except SyntaxError:

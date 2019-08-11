@@ -312,20 +312,21 @@ if __name__ == '__main__':
 
   # _mm512_mask_permutexvar_epi32
   sema = '''
-<intrinsic tech="Other" rettype='unsigned __int64' name='_mulx_u64'>
+<intrinsic tech='SSE2' vexEq='TRUE' rettype='__m128i' name='_mm_add_epi8'>
 	<type>Integer</type>
-	<CPUID>BMI2</CPUID>
+	<CPUID>SSE2</CPUID>
 	<category>Arithmetic</category>
-	<parameter type='unsigned __int64' varname='a' />
-	<parameter type='unsigned __int64' varname='b' />
-	<parameter type='unsigned __int64*' varname='hi' />
-	<description>Multiply unsigned 64-bit integers "a" and "b", store the low 64-bits of the result in "dst", and store the high 64-bits in "hi". This does not read or write arithmetic flags.</description>
+	<parameter varname='a' type='__m128i'/>
+	<parameter varname='b' type='__m128i'/>
+	<description>Add packed 8-bit integers in "a" and "b", and store the results in "dst".</description>
 	<operation>
-dst[63:0] := (a * b)[63:0]
-hi[63:0] := (a * b)[127:64]
+FOR j := 0 to 15
+	i := j*8
+	dst[i+7:i] := a[i+7:i] + b[i+7:i]
+ENDFOR
 	</operation>
-	<instruction name='mulx' form='r64, r64, m64' />
-	<header>immintrin.h</header>
+	<instruction name='paddb' form='xmm, xmm'/>
+	<header>emmintrin.h</header>
 </intrinsic>
   '''
   intrin_node = ET.fromstring(sema)
