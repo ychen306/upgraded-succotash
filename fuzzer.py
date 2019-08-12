@@ -26,7 +26,8 @@ def check_compiled_spec_with_examples(param_vals, outs, inputs, expected_outs):
         z3.Implies(z3.And(preconditions), z3.And(postconditions)))
   spec_correct = z3.And(constraints)
   s.add(z3.Not(spec_correct))
-  return s.check() == z3.unsat
+  correct = s.check() == z3.unsat
+  return correct
 
 
 def line_to_bitvec(line, ty):
@@ -202,10 +203,9 @@ def fuzz_intrinsic_once(outf, spec):
   arg_vals = []
   out_params = []
   out_param_types = []
-  inst_form = spec.inst_form.split()
+  inst_form = spec.inst_form.split(', ')
   for i, param in enumerate(spec.params):
-    # special case for immediate
-    if i < len(inst_form) and inst_form[i] == 'imm':
+    if i < len(inst_form) and inst_form[i] == 'imm' or param.name == 'imm8':
       byte = random.randint(0, 255)
       c_vars.append(str(byte))
       arg_vals.append(Bits(uint=byte, length=8))
@@ -331,10 +331,12 @@ int main() {
       ''')
     outf.flush()
 
+    os.system('cp %s %s' % (outf.name, 'out.c'))
+
     # TODO: add CPUIDs 
     try:
       subprocess.check_output(
-          'gcc %s -o %s -I%s %s/printers.o >/dev/null 2>/dev/null  -mavx -mavx2 -march=native -mfma' % (
+          'gcc %s -o %s -I%s %s/printers.o >/dev/null -mavx -mavx2 -march=native -mfma' % (
             outf.name, exe.name, src_path, src_path),
           shell=True)
     except subprocess.CalledProcessError:
@@ -366,25 +368,29 @@ if __name__ == '__main__':
   from intrinsic_types import IntegerType
 
   sema = '''
-<intrinsic tech="Other" rettype='unsigned __int64' name='_mulx_u64'>
+<intrinsic tech="AVX-512" rettype="__m512i" name="_mm512_sll_epi32">
 	<type>Integer</type>
-	<CPUID>BMI2</CPUID>
-	<category>Arithmetic</category>
-	<parameter type='unsigned __int64' varname='a' />
-	<parameter type='unsigned __int64' varname='b' />
-	<parameter type='unsigned __int64*' varname='hi' />
-	<description>Multiply unsigned 64-bit integers "a" and "b", store the low 64-bits of the result in "dst", and store the high 64-bits in "hi". This does not read or write arithmetic flags.</description>
+	<CPUID>AVX512F</CPUID>
+	<category>Shift</category>
+	<parameter varname="a" type="__m512i"/>
+	<parameter varname="count" type="__m128i"/>
+	<description>Shift packed 32-bit integers in "a" left by "count" while shifting in zeros, and store the results in "dst". </description>
 	<operation>
-dst[63:0] := (a * b)[63:0]
-hi[63:0] := (a * b)[127:64]
+FOR j := 0 to 15
+	i := j*32
+	IF count[63:0] &gt; 31
+		dst[i+31:i] := 0
+	ELSE
+		dst[i+31:i] := ZeroExtend(a[i+31:i] &lt;&lt; count[63:0])
+	FI
+ENDFOR
+dst[MAX:512] := 0
 	</operation>
-	<instruction name='mulx' form='r64, r64, m64' />
+	<instruction name='vpslld' form='zmm {k}, zmm, xmm'/>
 	<header>immintrin.h</header>
 </intrinsic>
   '''
   intrin_node = ET.fromstring(sema)
   spec = get_spec_from_xml(intrin_node)
-  #param_vals, outs = compile(spec)
-
   ok = fuzz_intrinsic(spec, num_tests=100)
   print(ok)

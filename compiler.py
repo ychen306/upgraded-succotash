@@ -101,7 +101,7 @@ def fp_literal(val, bitwidth):
   return bv
 
 def binary_float_op(op):
-  def impl(a, b):
+  def impl(a, b, _=None):
     if z3.is_bv(a):
       bitwidth = a.size()
       if not z3.is_bv(b):
@@ -121,7 +121,7 @@ def binary_float_op(op):
   return impl
 
 def binary_float_cmp(op):
-  def impl(a, b):
+  def impl(a, b, _=None):
     assert a.size() == b.size()
     bitwidth = a.size()
     assert bitwidth in (32, 64)
@@ -170,6 +170,20 @@ def slice_bit_vec(bv, lo, hi):
 get_total_arg_width = lambda a, b: a.size() + b.size()
 get_max_arg_width = lambda a, b: max(a.size(), b.size())
 
+def select_op(op, signed):
+  if signed:
+    return op
+
+  # mapping signed op -> unsigned counterpart
+  unsigned_ops = {
+      operator.lt: z3.ULT,
+      operator.le: z3.ULE,
+      operator.gt: z3.UGT,
+      operator.ge: z3.UGE,
+      operator.rshift: z3.LShR,
+  }
+  return unsigned_ops.get(op, op)
+
 def binary_op(op, signed=True, trunc=False, get_bitwidth=lambda a, b:max(a.size(), b.size())):
   def impl(a, b, signed_override=signed):
     bitwidth = get_bitwidth(a, b)
@@ -180,7 +194,7 @@ def binary_op(op, signed=True, trunc=False, get_bitwidth=lambda a, b:max(a.size(
     else:
       a = z3.Extract(bitwidth-1, 0, z3.ZeroExt(bitwidth, a))
       b = z3.Extract(bitwidth-1, 0, z3.ZeroExt(bitwidth, b))
-    c = op(a, b)
+    c = select_op(op, signed_override)(a, b)
     if trunc:
       c = c & mask
     return c
@@ -200,7 +214,7 @@ binary_op_impls = {
     ('>', True): binary_float_cmp('gt'),
     ('>=', True): binary_float_cmp('ge'),
     ('!=', True): binary_float_cmp('ne'),
-    ('>>', True): binary_op(operator.rshift, signed=False),
+    ('>>', True): binary_op(operator.rshift),
     ('<<', True): binary_op(operator.lshift, signed=False, get_bitwidth=get_max_shift_width),
 
     ('AND', True): binary_op(operator.and_, signed=False),
@@ -211,13 +225,13 @@ binary_op_impls = {
     ('*', False): binary_op(operator.mul, get_bitwidth=get_total_arg_width, signed=False),
     ('+', False): binary_op(operator.add, get_bitwidth=get_total_arg_width, signed=False),
     ('-', False): binary_op(operator.sub, get_bitwidth=get_total_arg_width, signed=False),
-    ('>', False): binary_op(operator.gt, signed=False),
+    ('>', False): binary_op(operator.gt),
     ('>=', False): binary_op(operator.ge),
     ('<', False): binary_op(operator.lt),
     ('<=', False): binary_op(operator.le),
     ('%', False): binary_op(operator.mod, signed=True),
     ('<<', False): binary_op(operator.lshift, signed=False, get_bitwidth=get_max_shift_width),
-    ('>>', False): binary_op(operator.rshift, signed=False), # what about the signedness???
+    ('>>', False): binary_op(operator.rshift), # what about the signedness???
 
     ('AND', False): binary_op(operator.and_, signed=False),
     ('&', False): binary_op(operator.and_, signed=False),

@@ -11,7 +11,8 @@ void print__m256i(unsigned long *val) {
 
 #ifdef __AVX512VL__
 void print__m512i(unsigned long *val) {
-    printf("%lu %lu %lu %lu %lu %lu %lu %lu\n", val[0], val[1], val[2], val[3]);
+    printf("%lu %lu %lu %lu %lu %lu %lu %lu\n", val[0], val[1], val[2], val[3],
+        val[4], val[5], val[6], val[7]);
 }
 #endif
 
