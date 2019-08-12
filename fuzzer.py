@@ -14,23 +14,53 @@ import operator
 
 src_path = os.path.dirname(os.path.abspath(__file__))
 
-def check_compiled_spec_with_examples(param_vals, outs, inputs, expected_outs):
+def extract_float(bv, i, bitwidth):
+  '''
+  extract i'th float from bv
+
+  bitwidth is the size of a one floating point (either 32 or 64)
+  '''
+  if bitwidth == 32:
+    ty = z3.Float32()
+  else:
+    assert bitwidth == 64
+    ty = z3.Float64()
+  sub_bv = z3.Extract(i * bitwidth + bitwidth - 1, i * bitwidth, bv)
+  return z3.fpBVToFP(sub_bv, ty)
+
+def equal(a, b, ty):
+  if is_float(ty):
+    if ty.is_float:
+      elem_bw = 32
+    else:
+      elem_bw = 64
+    assert ty.bitwidth % elem_bw == 0
+    num_elems = ty.bitwidth // elem_bw
+    return z3.And([
+        z3.fpAbs(extract_float(a, i, elem_bw) - extract_float(b, i, elem_bw)) < 1e-5
+        for i in range(num_elems)])
+  return a == b
+
+def check_compiled_spec_with_examples(param_vals, outs, out_types, inputs, expected_outs):
   s = z3.Solver()
   constraints = []
   for input, expected in zip(inputs, expected_outs):
     preconditions = [x_sym == x_conc
     for x_sym, x_conc in zip(param_vals, input)]
-    postconditions = [y_expected == y
-        for y_expected, y in zip(expected, outs)]
+    postconditions = [equal(z3.BitVecVal(y_expected, y.size()), y, out_type)
+        for y_expected, y, out_type in zip(expected, outs, out_types)]
     constraints.append(
         z3.Implies(z3.And(preconditions), z3.And(postconditions)))
   spec_correct = z3.And(constraints)
   s.add(z3.Not(spec_correct))
   correct = s.check() == z3.unsat
+  if not correct:
+    print(s.model().evaluate(outs[0]), expected_outs[0][0])
   return correct
 
 
 def line_to_bitvec(line, ty):
+  print(line)
   qwords = list(map(int, line.split()))
   if ty.bitwidth <= 64:
     assert len(qwords) == 1
@@ -357,7 +387,8 @@ int main() {
     y.append(outputs)
 
   param_vals, outs = compile(spec)
-  correct = check_compiled_spec_with_examples(param_vals, outs, x, y)
+  print(outs)
+  correct = check_compiled_spec_with_examples(param_vals, outs, out_types, x, y)
 
   return correct, True
 
@@ -368,29 +399,33 @@ if __name__ == '__main__':
   from intrinsic_types import IntegerType
 
   sema = '''
-<intrinsic tech='AVX-512' rettype='__m256i' name='_mm256_xor_epi64'>
-	<type>Integer</type>
-	<CPUID>AVX512VL</CPUID>
-	<CPUID>AVX512F</CPUID>
-	<category>Logical</category>
-	<parameter varname='a' type='__m256i'/>
-	<parameter varname='b' type='__m256i'/>
-	<description>
-		Compute the bitwise XOR of packed 64-bit integers in "a" and "b", and store the results in "dst".
-	</description>
+<intrinsic tech="AVX-512/KNC" rettype="__m512" name="_mm512_mask3_fnmsub_ps">
+	<type>Floating Point</type>
+	<CPUID>AVX512F/KNCNI</CPUID>
+	<category>Arithmetic</category>
+	<parameter varname="a" type="__m512"/>
+	<parameter varname="b" type="__m512"/>
+	<parameter varname="c" type="__m512"/>
+	<parameter varname="k" type="__mmask16"/>
+	<description>Multiply packed single-precision (32-bit) floating-point elements in "a" and "b", subtract packed elements in "c" from the negated intermediate result, and store the results in "dst" using writemask "k" (elements are copied from "c" when the corresponding mask bit is not set).  </description>
 	<operation>
-FOR j := 0 to 3
-	i := j*64
-	dst[i+63:i] := a[i+63:i] XOR b[i+63:i]
-ENDFOR
-dst[MAX:256] := 0
+FOR j := 0 to 15
+	i := j*32
+	IF k[j]
+		dst[i+31:i] := -(a[i+31:i] * b[i+31:i]) - c[i+31:i]
+	ELSE
+		dst[i+31:i] := c[i+31:i]
+	FI
+ENDFOR	
+dst[MAX:512] := 0
 	</operation>
-	
-	<instruction name='vporq' form='ymm, ymm'/>
+	<instruction name='vfnmsub132ps' form='zmm {k}, zmm, zmm'/>
+	<instruction name='vfnmsub213ps' form='zmm {k}, zmm, zmm'/>
+	<instruction name='vfnmsub231ps' form='zmm {k}, zmm, zmm'/>
 	<header>immintrin.h</header>
 </intrinsic>
   '''
   intrin_node = ET.fromstring(sema)
   spec = get_spec_from_xml(intrin_node)
-  ok = fuzz_intrinsic(spec, num_tests=100)
+  ok = fuzz_intrinsic(spec, num_tests=1)
   print(ok)

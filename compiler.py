@@ -100,7 +100,16 @@ def fp_literal(val, bitwidth):
   assert(bv.size() == bitwidth)
   return bv
 
-def binary_float_op(op):
+def bv2fp(x):
+  bitwidth = x.size()
+  if bitwidth == 32:
+    ty = z3.Float32()
+  else:
+    assert bitwidth == 64
+    ty = z3.Float64()
+  return z3.fpBVToFP(x, ty)
+
+def binary_float_op(op, precise=True):
   def impl(a, b, _=None):
     if z3.is_bv(a):
       bitwidth = a.size()
@@ -115,9 +124,17 @@ def binary_float_op(op):
       ty = BV32
     else:
       ty = BV64
-    func_name = 'fp_%s_%d' % (op, bitwidth)
-    func = get_uninterpreted_func(func_name, (ty, ty, ty))
-    return func(a, b)
+    if not precise:
+      func_name = 'fp_%s_%d' % (op, bitwidth)
+      func = get_uninterpreted_func(func_name, (ty, ty, ty))
+      return func(a, b)
+    else:
+      c = {
+          'add': operator.add,
+          'sub': operator.sub,
+          'mul': operator.mul,
+          'div': operator.truediv, }[op](bv2fp(a), bv2fp(b))
+      return z3.fpToIEEEBV(c)
   return impl
 
 def binary_float_cmp(op):
@@ -136,7 +153,9 @@ def binary_float_cmp(op):
     return bool2bv(result)
   return impl
 
-def unary_float_op(op):
+def unary_float_op(op, precise=True):
+  assert op == 'neg'
+
   def impl(a):
     bitwidth = a.size()
     assert bitwidth in (32, 64)
@@ -144,9 +163,12 @@ def unary_float_op(op):
       ty = BV32
     else:
       ty = BV64
-    func_name = 'fp_%s_%d' % (op, bitwidth)
-    func = get_uninterpreted_func(func_name, (ty, ty))
-    return func(a)
+    if not precise:
+      func_name = 'fp_%s_%d' % (op, bitwidth)
+      func = get_uninterpreted_func(func_name, (ty, ty))
+      return func(a)
+    else:
+      return z3.fpToIEEEBV(-bv2fp(a))
   return impl
 
 def is_constant(x):
