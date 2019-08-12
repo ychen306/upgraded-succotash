@@ -9,7 +9,8 @@ import itertools
 configurable_op = {
     '<', '<=',
     '>', '>=',
-    '>>'
+    '>>',
+    '*', '+', '-',
     }
 
 def configure_spec(spec, num_tests=10, num_iters=32):
@@ -51,26 +52,21 @@ if __name__ == '__main__':
   from manual_parser import get_spec_from_xml
 
   sema = '''
-<intrinsic tech="AVX-512" rettype="__m512i" name="_mm512_sll_epi32">
+<intrinsic tech='MMX' rettype='__m64' name='_m_paddsw'>
 	<type>Integer</type>
-	<CPUID>AVX512F</CPUID>
-	<category>Shift</category>
-	<parameter varname="a" type="__m512i"/>
-	<parameter varname="count" type="__m128i"/>
-	<description>Shift packed 32-bit integers in "a" left by "count" while shifting in zeros, and store the results in "dst". </description>
+	<CPUID>MMX</CPUID>
+	<category>Arithmetic</category>
+	<parameter varname='a' type='__m64'/>
+	<parameter varname='b' type='__m64'/>
+	<description>Add packed 16-bit integers in "a" and "b" using saturation, and store the results in "dst".</description>
 	<operation>
-FOR j := 0 to 15
-	i := j*32
-	IF count[63:0] &gt; 31
-		dst[i+31:i] := 0
-	ELSE
-		dst[i+31:i] := ZeroExtend(a[i+31:i] &lt;&lt; count[63:0])
-	FI
+FOR j := 0 to 3
+	i := j*16
+	dst[i+15:i] := Saturate_To_Int16( a[i+15:i] + b[i+15:i] )
 ENDFOR
-dst[MAX:512] := 0
 	</operation>
-	<instruction name='vpslld' form='zmm {k}, zmm, xmm'/>
-	<header>immintrin.h</header>
+	<instruction name='paddsw' form='mm, mm'/>
+	<header>mmintrin.h</header>
 </intrinsic>
   '''
 

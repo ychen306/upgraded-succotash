@@ -188,12 +188,8 @@ def binary_op(op, signed=True, trunc=False, get_bitwidth=lambda a, b:max(a.size(
   def impl(a, b, signed_override=signed):
     bitwidth = get_bitwidth(a, b)
     mask = (1 << get_max_arg_width(a,b))-1
-    if signed_override:
-      a = z3.Extract(bitwidth-1, 0, z3.SignExt(bitwidth, a))
-      b = z3.Extract(bitwidth-1, 0, z3.SignExt(bitwidth, b))
-    else:
-      a = z3.Extract(bitwidth-1, 0, z3.ZeroExt(bitwidth, a))
-      b = z3.Extract(bitwidth-1, 0, z3.ZeroExt(bitwidth, b))
+    a = fix_bitwidth(a, bitwidth, signed_override)
+    b = fix_bitwidth(b, bitwidth, signed_override)
     c = select_op(op, signed_override)(a, b)
     if trunc:
       c = c & mask
@@ -570,7 +566,7 @@ def gen_saturation_func(bitwidth, in_signed, out_signed):
           gt(val, hi),
           hi,
           val))
-    return new_val, IntegerType(out_signed)
+    return fix_bitwidth(new_val, bitwidth), IntegerType(bitwidth)
   return saturate
 
 def builtin_concat(args, _):

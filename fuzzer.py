@@ -331,7 +331,7 @@ int main() {
       ''')
     outf.flush()
 
-    os.system('cp %s %s' % (outf.name, 'out.c'))
+    os.system('cp %s %s' % (outf.name, 'out2.c'))
 
     # TODO: add CPUIDs 
     try:
@@ -368,25 +368,25 @@ if __name__ == '__main__':
   from intrinsic_types import IntegerType
 
   sema = '''
-<intrinsic tech="AVX-512" rettype="__m512i" name="_mm512_sll_epi32">
+<intrinsic tech='AVX-512' rettype='__m256i' name='_mm256_xor_epi64'>
 	<type>Integer</type>
+	<CPUID>AVX512VL</CPUID>
 	<CPUID>AVX512F</CPUID>
-	<category>Shift</category>
-	<parameter varname="a" type="__m512i"/>
-	<parameter varname="count" type="__m128i"/>
-	<description>Shift packed 32-bit integers in "a" left by "count" while shifting in zeros, and store the results in "dst". </description>
+	<category>Logical</category>
+	<parameter varname='a' type='__m256i'/>
+	<parameter varname='b' type='__m256i'/>
+	<description>
+		Compute the bitwise XOR of packed 64-bit integers in "a" and "b", and store the results in "dst".
+	</description>
 	<operation>
-FOR j := 0 to 15
-	i := j*32
-	IF count[63:0] &gt; 31
-		dst[i+31:i] := 0
-	ELSE
-		dst[i+31:i] := ZeroExtend(a[i+31:i] &lt;&lt; count[63:0])
-	FI
+FOR j := 0 to 3
+	i := j*64
+	dst[i+63:i] := a[i+63:i] XOR b[i+63:i]
 ENDFOR
-dst[MAX:512] := 0
+dst[MAX:256] := 0
 	</operation>
-	<instruction name='vpslld' form='zmm {k}, zmm, xmm'/>
+	
+	<instruction name='vporq' form='ymm, ymm'/>
 	<header>immintrin.h</header>
 </intrinsic>
   '''
