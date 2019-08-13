@@ -234,8 +234,10 @@ def fuzz_intrinsic_once(outf, spec):
   out_params = []
   out_param_types = []
   inst_form = spec.inst_form.split(', ')
+  no_imm8 = 'imm8' not in (param.name for param in spec.params)
   for i, param in enumerate(spec.params):
-    if i < len(inst_form) and inst_form[i] == 'imm' or param.name == 'imm8':
+    if ((no_imm8 and i < len(inst_form) and inst_form[i] == 'imm') or
+        param.name == 'imm8'):
       byte = random.randint(0, 255)
       c_vars.append(str(byte))
       arg_vals.append(Bits(uint=byte, length=8))
@@ -361,12 +363,12 @@ int main() {
       ''')
     outf.flush()
 
-    os.system('cp %s %s' % (outf.name, 'out2.c'))
+    os.system('cp %s %s' % (outf.name, 'debug.c'))
 
     # TODO: add CPUIDs 
     try:
       subprocess.check_output(
-          'gcc %s -o %s -I%s %s/printers.o >/dev/null 2>/dev/null -mavx -mavx2 -march=native -mfma' % (
+          'gcc %s -o %s -I%s %s/printers.o >/dev/null -mavx -mavx2 -march=native -mfma' % (
             outf.name, exe.name, src_path, src_path),
           shell=True)
     except subprocess.CalledProcessError:
@@ -398,31 +400,54 @@ if __name__ == '__main__':
   from intrinsic_types import IntegerType
 
   sema = '''
-<intrinsic tech="AVX-512" rettype="__mmask64" name="_mm512_mask_cmpneq_epi8_mask">
+<intrinsic tech="Other" rettype='unsigned int' name='_lzcnt_u32'>
 	<type>Integer</type>
-	<type>Mask</type>
+	<CPUID>LZCNT</CPUID>
+	<category>Bit Manipulation</category>
+	<parameter type='unsigned int' varname='a' />
+	<description>Count the number of leading zero bits in unsigned 32-bit integer "a", and return that count in "dst".</description>
+	<operation>
+tmp := 31
+dst := 0
+DO WHILE (tmp &gt;= 0 AND a[tmp] == 0)
+	tmp := tmp - 1
+	dst := dst + 1
+OD	
+	</operation>
+	<instruction name='lzcnt' form='r32, r32'/>
+	<header>immintrin.h</header>
+</intrinsic>
+  '''
+  sema = '''
+<intrinsic tech="AVX-512" rettype="__m512i" name="_mm512_maskz_shuffle_epi8">
+	<type>Integer</type>
 	<CPUID>AVX512BW</CPUID>
-	<category>Compare</category>
-	<parameter varname="k1" type="__mmask64"/>
+	<category>Miscellaneous</category>
+	<parameter varname="k" type="__mmask64"/>
 	<parameter varname="a" type="__m512i"/>
 	<parameter varname="b" type="__m512i"/>
-	<description>Compare packed 8-bit integers in "a" and "b" for not-equal, and store the results in mask vector "k" using zeromask "k1" (elements are zeroed out when the corresponding mask bit is not set).</description>
+	<description>Shuffle packed 8-bit integers in "a" according to shuffle control mask in the corresponding 8-bit element of "b", and store the results in "dst" using zeromask "k" (elements are zeroed out when the corresponding mask bit is not set).</description>
 	<operation>
 FOR j := 0 to 63
 	i := j*8
-	IF k1[j]
-		dst[j] := ( a[i+7:i] != b[i+7:i] ) ? 1 : 0
+	IF k[j]
+		IF b[i+7] == 1
+			dst[i+7:i] := 0
+		ELSE
+			index[5:0] := b[i+3:i] + (j &amp; 0x30)
+			dst[i+7:i] := a[index*8+7:index*8]
+		FI
 	ELSE
-		dst[j] := 0
+		dst[i+7:i] := 0
 	FI
 ENDFOR
-dst[MAX:64] := 0
+dst[MAX:512] := 0
 	</operation>
-	<instruction name="vpcmpb"/>
+	<instruction name="vpshufb"/>
 	<header>immintrin.h</header>
 </intrinsic>
   '''
   intrin_node = ET.fromstring(sema)
   spec = get_spec_from_xml(intrin_node)
-  ok = fuzz_intrinsic(spec, num_tests=1)
+  ok = fuzz_intrinsic(spec, num_tests=10)
   print(ok)

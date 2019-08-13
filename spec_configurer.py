@@ -52,21 +52,32 @@ if __name__ == '__main__':
   from manual_parser import get_spec_from_xml
 
   sema = '''
-<intrinsic tech='MMX' rettype='__m64' name='_m_paddsw'>
+<intrinsic tech="AVX-512" rettype="__m512i" name="_mm512_maskz_shuffle_epi8">
 	<type>Integer</type>
-	<CPUID>MMX</CPUID>
-	<category>Arithmetic</category>
-	<parameter varname='a' type='__m64'/>
-	<parameter varname='b' type='__m64'/>
-	<description>Add packed 16-bit integers in "a" and "b" using saturation, and store the results in "dst".</description>
+	<CPUID>AVX512BW</CPUID>
+	<category>Miscellaneous</category>
+	<parameter varname="k" type="__mmask64"/>
+	<parameter varname="a" type="__m512i"/>
+	<parameter varname="b" type="__m512i"/>
+	<description>Shuffle packed 8-bit integers in "a" according to shuffle control mask in the corresponding 8-bit element of "b", and store the results in "dst" using zeromask "k" (elements are zeroed out when the corresponding mask bit is not set).</description>
 	<operation>
-FOR j := 0 to 3
-	i := j*16
-	dst[i+15:i] := Saturate_To_Int16( a[i+15:i] + b[i+15:i] )
+FOR j := 0 to 63
+	i := j*8
+	IF k[j]
+		IF b[i+7] == 1
+			dst[i+7:i] := 0
+		ELSE
+			index[5:0] := b[i+3:i] + (j &amp; 0x30)
+			dst[i+7:i] := a[index*8+7:index*8]
+		FI
+	ELSE
+		dst[i+7:i] := 0
+	FI
 ENDFOR
+dst[MAX:512] := 0
 	</operation>
-	<instruction name='paddsw' form='mm, mm'/>
-	<header>mmintrin.h</header>
+	<instruction name="vpshufb"/>
+	<header>immintrin.h</header>
 </intrinsic>
   '''
 

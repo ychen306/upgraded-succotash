@@ -247,7 +247,7 @@ binary_op_impls = {
     ('>', True): binary_float_cmp('gt'),
     ('>=', True): binary_float_cmp('ge'),
     ('!=', True): binary_float_cmp('ne'),
-    ('>>', True): binary_op(operator.rshift),
+    ('>>', True): binary_op(operator.rshift, signed=False),
     ('<<', True): binary_op(operator.lshift, signed=False, get_bitwidth=get_max_shift_width),
 
     ('AND', True): binary_op(operator.and_, signed=False),
@@ -264,7 +264,7 @@ binary_op_impls = {
     ('<=', False): binary_op(operator.le),
     ('%', False): binary_op(operator.mod, signed=True),
     ('<<', False): binary_op(operator.lshift, signed=False, get_bitwidth=get_max_shift_width),
-    ('>>', False): binary_op(operator.rshift), # what about the signedness???
+    ('>>', False): binary_op(operator.rshift, signed=False),
 
     ('AND', False): binary_op(operator.and_, signed=False),
     ('&', False): binary_op(operator.and_, signed=False),
@@ -554,7 +554,7 @@ def compile_bit_slice(bit_slice, env, pred):
   # assume only integers can be implicitly declared
   if (type(bit_slice.bv) == Var and
       not env.has(bit_slice.bv.name)):
-    env.define(bit_slice.bv.name, type=IntegerType(max_vl), value=new_sym_val(IntegerType(max_vl)))
+    env.define(bit_slice.bv.name, type=IntegerType(max_vl), value=conc_val(0, IntegerType(max_vl)))
   slice_src, ty = compile_expr(bit_slice.bv, env, pred)
 
   # resize bitvectors implicitly defined
@@ -980,21 +980,29 @@ if __name__ == '__main__':
 
   import xml.etree.ElementTree as ET
   sema = '''
-<intrinsic tech='SSE2' vexEq='TRUE' rettype='__m128i' name='_mm_add_epi8'>
+<intrinsic tech="AVX-512" rettype="__mmask64" name="_mm512_mask_cmpneq_epi8_mask">
 	<type>Integer</type>
-	<CPUID>SSE2</CPUID>
-	<category>Arithmetic</category>
-	<parameter varname='a' type='__m128i'/>
-	<parameter varname='b' type='__m128i'/>
-	<description>Add packed 8-bit integers in "a" and "b", and store the results in "dst".</description>
+	<type>Mask</type>
+	<CPUID>AVX512BW</CPUID>
+	<category>Compare</category>
+	<parameter varname="k1" type="__mmask64"/>
+	<parameter varname="a" type="__m512i"/>
+	<parameter varname="b" type="__m512i"/>
+	<description>Compare packed 8-bit integers in "a" and "b" for not-equal, and store the results in mask vector "k" using zeromask "k1" (elements are zeroed out when the corresponding mask bit is not set).</description>
 	<operation>
-FOR j := 0 to 15
+FOR j := 0 to 63
 	i := j*8
-	dst[i+7:i] := a[i+7:i] + b[i+7:i]
+	IF k1[j]
+		k[j] := ( a[i+7:i] != b[i+7:i] ) ? 1 : 0
+	ELSE
+		k[j] := 0
+	FI
 ENDFOR
+k[MAX:64] := 0
+RETURN k
 	</operation>
-	<instruction name='paddb' form='xmm, xmm'/>
-	<header>emmintrin.h</header>
+	<instruction name="vpcmpb"/>
+	<header>immintrin.h</header>
 </intrinsic>
   '''
   sema = '''
