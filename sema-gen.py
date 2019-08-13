@@ -52,7 +52,7 @@ for intrin in data_root.iter('intrinsic'):
   cat = intrin.find('category')
   if cat is not None and cat.text in (
       'Elementary Math Functions', 
-      'General Support',
+      'General Support', 'Convert',
       'Load', 'Store', 'Special Math Functions'):
     continue
   if skip_to is not None and not skipped:

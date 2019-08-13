@@ -43,6 +43,7 @@ def equal(a, b, ty):
 
 def check_compiled_spec_with_examples(param_vals, outs, out_types, inputs, expected_outs):
   s = z3.Solver()
+  s.set(timeout=20000)
   constraints = []
   for input, expected in zip(inputs, expected_outs):
     preconditions = [x_sym == x_conc
@@ -54,13 +55,12 @@ def check_compiled_spec_with_examples(param_vals, outs, out_types, inputs, expec
   spec_correct = z3.And(constraints)
   s.add(z3.Not(spec_correct))
   correct = s.check() == z3.unsat
-  if not correct:
-    print(s.model().evaluate(outs[0]), expected_outs[0][0])
+  #if not correct:
+  #  print(s.model().evaluate(outs[0]), expected_outs[0][0])
   return correct
 
 
 def line_to_bitvec(line, ty):
-  print(line)
   qwords = list(map(int, line.split()))
   if ty.bitwidth <= 64:
     assert len(qwords) == 1
@@ -366,7 +366,7 @@ int main() {
     # TODO: add CPUIDs 
     try:
       subprocess.check_output(
-          'gcc %s -o %s -I%s %s/printers.o >/dev/null -mavx -mavx2 -march=native -mfma' % (
+          'gcc %s -o %s -I%s %s/printers.o >/dev/null 2>/dev/null -mavx -mavx2 -march=native -mfma' % (
             outf.name, exe.name, src_path, src_path),
           shell=True)
     except subprocess.CalledProcessError:
@@ -387,7 +387,6 @@ int main() {
     y.append(outputs)
 
   param_vals, outs = compile(spec)
-  print(outs)
   correct = check_compiled_spec_with_examples(param_vals, outs, out_types, x, y)
 
   return correct, True
@@ -399,29 +398,27 @@ if __name__ == '__main__':
   from intrinsic_types import IntegerType
 
   sema = '''
-<intrinsic tech="AVX-512/KNC" rettype="__m512" name="_mm512_mask3_fnmsub_ps">
-	<type>Floating Point</type>
-	<CPUID>AVX512F/KNCNI</CPUID>
-	<category>Arithmetic</category>
-	<parameter varname="a" type="__m512"/>
-	<parameter varname="b" type="__m512"/>
-	<parameter varname="c" type="__m512"/>
-	<parameter varname="k" type="__mmask16"/>
-	<description>Multiply packed single-precision (32-bit) floating-point elements in "a" and "b", subtract packed elements in "c" from the negated intermediate result, and store the results in "dst" using writemask "k" (elements are copied from "c" when the corresponding mask bit is not set).  </description>
+<intrinsic tech="AVX-512" rettype="__mmask64" name="_mm512_mask_cmpneq_epi8_mask">
+	<type>Integer</type>
+	<type>Mask</type>
+	<CPUID>AVX512BW</CPUID>
+	<category>Compare</category>
+	<parameter varname="k1" type="__mmask64"/>
+	<parameter varname="a" type="__m512i"/>
+	<parameter varname="b" type="__m512i"/>
+	<description>Compare packed 8-bit integers in "a" and "b" for not-equal, and store the results in mask vector "k" using zeromask "k1" (elements are zeroed out when the corresponding mask bit is not set).</description>
 	<operation>
-FOR j := 0 to 15
-	i := j*32
-	IF k[j]
-		dst[i+31:i] := -(a[i+31:i] * b[i+31:i]) - c[i+31:i]
+FOR j := 0 to 63
+	i := j*8
+	IF k1[j]
+		dst[j] := ( a[i+7:i] != b[i+7:i] ) ? 1 : 0
 	ELSE
-		dst[i+31:i] := c[i+31:i]
+		dst[j] := 0
 	FI
-ENDFOR	
-dst[MAX:512] := 0
+ENDFOR
+dst[MAX:64] := 0
 	</operation>
-	<instruction name='vfnmsub132ps' form='zmm {k}, zmm, zmm'/>
-	<instruction name='vfnmsub213ps' form='zmm {k}, zmm, zmm'/>
-	<instruction name='vfnmsub231ps' form='zmm {k}, zmm, zmm'/>
+	<instruction name="vpcmpb"/>
 	<header>immintrin.h</header>
 </intrinsic>
   '''

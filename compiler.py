@@ -101,6 +101,9 @@ def fp_literal(val, bitwidth):
   return bv
 
 def bv2fp(x):
+  '''
+  reinterpret x as a float
+  '''
   bitwidth = x.size()
   if bitwidth == 32:
     ty = z3.Float32()
@@ -109,7 +112,9 @@ def bv2fp(x):
     ty = z3.Float64()
   return z3.fpBVToFP(x, ty)
 
-def binary_float_op(op, precise=True):
+precise = True
+
+def binary_float_op(op):
   def impl(a, b, _=None):
     if z3.is_bv(a):
       bitwidth = a.size()
@@ -146,14 +151,24 @@ def binary_float_cmp(op):
       ty = BV32
     else:
       ty = BV64
-    func_name = 'fp_%s_%d' % (op, bitwidth)
-    func = get_uninterpreted_func(func_name, (ty, ty, z3.BoolSort()))
-    result = func(a,b)
-    assert z3.is_bool(result)
+    if not precise:
+      func_name = 'fp_%s_%d' % (op, bitwidth)
+      func = get_uninterpreted_func(func_name, (ty, ty, z3.BoolSort()))
+      result = func(a,b)
+      assert z3.is_bool(result)
+    else:
+      result = {
+          'lt': operator.lt,
+          'le': operator.le,
+          'gt': operator.gt,
+          'ge': operator.ge,
+          'ne': operator.ne,
+          }[op](bv2fp(a), bv2fp(b))
+
     return bool2bv(result)
   return impl
 
-def unary_float_op(op, precise=True):
+def unary_float_op(op):
   assert op == 'neg'
 
   def impl(a):
@@ -694,16 +709,66 @@ f64_32 = BV64, BV32
 f32_64 = BV32, BV64
 f64_64 = BV64, BV64
 
+def gen_int2fp(in_signed, in_bitwidth, out_bitwidth):
+  assert out_bitwidth in (32, 64)
+  def precise_impl(x):
+    x = fix_bitwidth(x, in_bitwidth)
+    if out_bitwidth == 32:
+      ty = z3.Float32()
+    else:
+      ty = z3.Float64()
+    if in_singed:
+      return z3.fpSignedToFP(z3.RNE(), x, ty)
+    return z3.fpUnsignedToFP(z3.RNE(), x, ty), FloatType(out_bitwidth)
+
+  def uninterpreted_impl(x):
+    param_types = z3.BitVecSort(in_bitwidth), z3.BitVecSort(out_bitwidth)
+    func_name = 'conv_%s%d_to_f%d' % (
+        'i' if in_signed else 'u',
+        in_bitwidth,
+        out_bitwidth)
+    func = get_uninterpreted_func(func_name, param_types)
+    x = fix_bitwidth(x, in_bitwidth)
+    return func(x), FloatType(out_bitwidth)
+
+  return precise_impl if precise else uninterpreted_impl
+
+def gen_fp2int(out_signed, in_bitwidth, out_bitwidth):
+  assert in_bitwidth in (32, 64)
+  out_ty = z3.BitVecSort(out_bitwidth)
+  def precise_impl(x):
+    if trunc:
+      x = x + 0.5
+    x = bv2fp(fix_bitwidth(x, in_bitwidth))
+    if out_signed:
+      return z3.fpToSBV(z3.RTZ(), x, out_ty)
+    return z3.fpToUBV(z3.RTZ(), x, out_ty), IntegerType(out_bitwidth)
+
+  def uninterpreted_impl(x):
+    func_name = 'conv_f%d_to_%s_%s%d' % (
+        in_bitwidth,
+        'i' if out_signed else 'u',
+        out_bitwidth)
+    if in_bitwidth == 32:
+      fp_ty = z3.Float32()
+    else:
+      fp_ty = z3.Float64()
+    param_types = fp_ty, out_ty
+    func = get_uninterpreted_func(func_name, param_types)
+    return func(x), IntegerType(out_bitwidth)
+
+  return precise_impl if precise else uninterpreted_impl
+
 # mapping func -> type, ret-float?
-uninterpreted_builtins = {
-    'Convert_Int32_To_FP32': (f32_32, True),
-    'Convert_Int64_To_FP32': (f64_32, True),
-    'Convert_Int32_To_FP64': (f32_64, True),
-    'Convert_Int64_To_FP64': (f64_64, True),
-    'Convert_FP32_To_Int32': (f32_32, False),
-    'Convert_FP64_To_Int32': (f64_32, False),
-    'Convert_FP32_To_Int64': (f32_64, False),
-    'Convert_FP64_To_Int64': (f64_64, False),
+builtin_convs = {
+    'Convert_Int32_To_FP32': gen_int2fp(True, 32, 32),
+    'Convert_Int64_To_FP32': gen_int2fp(True, 64, 32),
+    'Convert_Int32_To_FP64': gen_int2fp(True, 32, 64),
+    'Convert_Int64_To_FP64': gen_int2fp(True, 64, 64),
+    'Convert_FP32_To_Int32': gen_fp2int(True, 32, 32),
+    'Convert_FP64_To_Int32': gen_fp2int(True, 64, 32),
+    'Convert_FP32_To_Int64': gen_fp2int(True, 32, 64),
+    'Convert_FP64_To_Int64': gen_fp2int(True, 64, 64),
     'Convert_FP32_To_Int32_Truncate': (f32_32, False),
     'Convert_FP64_To_Int32_Truncate': (f64_32, False),
     'Convert_FP64_To_Int64_Truncate': (f64_64, False),
@@ -761,17 +826,11 @@ def compile_call(call, env, pred):
     # assume builtins don't modify the environment
     return builtins[call.func](args, env)
 
-  # calling a ``well defined'' builtin float funcs
-  if call.func in uninterpreted_builtins:
-    param_types, ret_float = uninterpreted_builtins[call.func]
-    func = get_uninterpreted_func(call.func, param_types)
-    fixed_args = []
-    for (arg, _), param_type in zip(args, param_types[:-1]):
-      arg = fix_bitwidth(arg, param_type.size())
-      fixed_args.append(arg)
-    rettype = param_types[-1]
-    rettype = FloatType(rettype.size()) if ret_float else IntegerType(rettype.size())
-    return func(*fixed_args), rettype 
+  if call.func in builtin_convs:
+    assert len(args) == 1
+    conv_func = builtin_convs[call.func]
+    [x] = args
+    return conv_func(x)
 
   # calling funcs like `sqrt', which is could work for either float or double
   if call.func in unary_real_arith:
