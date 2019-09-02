@@ -36,9 +36,9 @@ def equal(a, b, ty):
       elem_bw = 64
     assert ty.bitwidth % elem_bw == 0
     num_elems = ty.bitwidth // elem_bw
-    return z3.And([
+    return z3.Or(a == b, z3.And([
         z3.fpAbs(extract_float(a, i, elem_bw) - extract_float(b, i, elem_bw)) < 1e-5
-        for i in range(num_elems)])
+        for i in range(num_elems)]))
   return a == b
 
 def check_compiled_spec_with_examples(param_vals, outs, out_types, inputs, expected_outs):
@@ -368,7 +368,7 @@ int main() {
     # TODO: add CPUIDs 
     try:
       subprocess.check_output(
-          'gcc %s -o %s -I%s %s/printers.o >/dev/null -mavx -mavx2 -march=native -mfma' % (
+          'gcc %s -o %s -I%s %s/printers.o >/dev/null 2>/dev/null -mavx -mavx2 -march=native -mfma' % (
             outf.name, exe.name, src_path, src_path),
           shell=True)
     except subprocess.CalledProcessError:
@@ -389,6 +389,7 @@ int main() {
     y.append(outputs)
 
   param_vals, outs = compile(spec)
+  print(outs[0])
   correct = check_compiled_spec_with_examples(param_vals, outs, out_types, x, y)
 
   return correct, True
@@ -419,35 +420,44 @@ OD
 </intrinsic>
   '''
   sema = '''
-<intrinsic tech="AVX-512" rettype="__m512i" name="_mm512_maskz_shuffle_epi8">
-	<type>Integer</type>
-	<CPUID>AVX512BW</CPUID>
-	<category>Miscellaneous</category>
-	<parameter varname="k" type="__mmask64"/>
-	<parameter varname="a" type="__m512i"/>
-	<parameter varname="b" type="__m512i"/>
-	<description>Shuffle packed 8-bit integers in "a" according to shuffle control mask in the corresponding 8-bit element of "b", and store the results in "dst" using zeromask "k" (elements are zeroed out when the corresponding mask bit is not set).</description>
+<intrinsic tech='SSE4.1' vexEq='TRUE' rettype='__m128d' name='_mm_dp_pd'>
+	<type>Floating Point</type>
+	<CPUID>SSE4.1</CPUID>
+	<category>Arithmetic</category>
+	<parameter varname='a' type='__m128d'/>
+	<parameter varname='b' type='__m128d'/>
+	<parameter varname="imm8" type='const int'/>
+	<description>Conditionally multiply the packed double-precision (64-bit) floating-point elements in "a" and "b" using the high 4 bits in "imm8", sum the four products, and conditionally store the sum in "dst" using the low 4 bits of "imm8".</description>
 	<operation>
-FOR j := 0 to 63
-	i := j*8
-	IF k[j]
-		IF b[i+7] == 1
-			dst[i+7:i] := 0
+DEFINE DP(a[127:0], b[127:0], imm8[7:0]) {
+	FOR j := 0 to 1
+		i := j*64
+		IF imm8[(4+j)%8]
+			temp[i+63:i] := a[i+63:i] * b[i+63:i]
 		ELSE
-			index[5:0] := b[i+3:i] + (j &amp; 0x30)
-			dst[i+7:i] := a[index*8+7:index*8]
+			temp[i+63:i] := 0
 		FI
-	ELSE
-		dst[i+7:i] := 0
-	FI
-ENDFOR
-dst[MAX:512] := 0
+	ENDFOR
+	
+	sum[63:0] := temp[127:64] + temp[63:0]
+	
+	FOR j := 0 to 1
+		i := j*64
+		IF imm8[j%8]
+			tmpdst[i+63:i] := sum[63:0]
+		ELSE
+			tmpdst[i+63:i] := 0
+		FI
+	ENDFOR
+	RETURN tmpdst[127:0]
+}
+dst[127:0] := DP(a[127:0], b[127:0], imm8[7:0])
 	</operation>
-	<instruction name="vpshufb"/>
-	<header>immintrin.h</header>
+	<instruction name='dppd' form='xmm, xmm, imm'/>
+	<header>smmintrin.h</header>
 </intrinsic>
   '''
   intrin_node = ET.fromstring(sema)
   spec = get_spec_from_xml(intrin_node)
-  ok = fuzz_intrinsic(spec, num_tests=10)
+  ok = fuzz_intrinsic(spec, num_tests=1)
   print(ok)

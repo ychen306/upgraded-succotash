@@ -396,7 +396,7 @@ def compile_for(for_stmt, env, pred=True):
 
 def compile_number(n, env, pred):
   if isinstance(n.val, int):
-    ty = IntegerType(32)
+    ty = IntegerType(64)
     val = conc_val(n.val, ty)
     return val, ty
   else:
@@ -501,6 +501,9 @@ def compile_expr(expr, env, pred=True, deref=False):
     return get_value(slice_or_val, env), ty
   return slice_or_val, ty
 
+def is_mask(ty):
+  return ty.startswith('__mmask')
+
 def compile(spec):
   # bring the arguments into scope
   env = Environment()
@@ -521,9 +524,14 @@ def compile(spec):
     if not is_out_param: 
       param_vals.append(param_val)
     env.define(param.name, type=param_type, value=param_val)
+
+  returns_mask = is_mask(spec.rettype)
   if spec.rettype != 'void':
     rettype = intrinsic_types[spec.rettype]
-    env.define('dst', type=rettype, value=new_sym_val(rettype))
+    if not returns_mask:
+      env.define('dst', type=rettype, value=new_sym_val(rettype))
+    else:
+      env.define('k', type=rettype, value=new_sym_val(rettype))
   else:
     returns_void = True
 
@@ -536,7 +544,11 @@ def compile(spec):
 
   outputs = [z3.simplify(env.get_value(out_param)) for out_param in out_params]
   if not returns_void:
-    dst = z3.simplify(env.get_value('dst'))
+    if not returns_mask:
+      retval = env.get_value('dst')
+    else:
+      retval = env.get_value('k')
+    dst = z3.simplify(retval)
     outputs = [dst] + outputs
   return param_vals, outputs
 
