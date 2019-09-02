@@ -368,7 +368,7 @@ int main() {
     # TODO: add CPUIDs 
     try:
       subprocess.check_output(
-          'gcc %s -o %s -I%s %s/printers.o >/dev/null -mavx -mavx2 -march=native -mfma' % (
+          'gcc %s -o %s -I%s %s/printers.o >/dev/null 2>/dev/null -mavx -mavx2 -march=native -mfma' % (
             outf.name, exe.name, src_path, src_path),
           shell=True)
     except subprocess.CalledProcessError:
@@ -419,31 +419,22 @@ OD
 </intrinsic>
   '''
   sema = '''
-<intrinsic tech="AVX-512" rettype="__m512i" name="_mm512_maskz_shuffle_epi8">
-	<type>Integer</type>
-	<CPUID>AVX512BW</CPUID>
-	<category>Miscellaneous</category>
-	<parameter varname="k" type="__mmask64"/>
-	<parameter varname="a" type="__m512i"/>
-	<parameter varname="b" type="__m512i"/>
-	<description>Shuffle packed 8-bit integers in "a" according to shuffle control mask in the corresponding 8-bit element of "b", and store the results in "dst" using zeromask "k" (elements are zeroed out when the corresponding mask bit is not set).</description>
+<intrinsic tech='AVX' rettype='__m256d' name='_mm256_shuffle_pd'>
+	<type>Floating Point</type>
+	<CPUID>AVX</CPUID>
+	<category>Swizzle</category>
+	<parameter varname='a' type='__m256d'/>
+	<parameter varname='b' type='__m256d'/>
+	<parameter varname="imm8" type='const int'/>
+	<description>Shuffle double-precision (64-bit) floating-point elements within 128-bit lanes using the control in "imm8", and store the results in "dst". </description>
 	<operation>
-FOR j := 0 to 63
-	i := j*8
-	IF k[j]
-		IF b[i+7] == 1
-			dst[i+7:i] := 0
-		ELSE
-			index[5:0] := b[i+3:i] + (j &amp; 0x30)
-			dst[i+7:i] := a[index*8+7:index*8]
-		FI
-	ELSE
-		dst[i+7:i] := 0
-	FI
-ENDFOR
-dst[MAX:512] := 0
+dst[63:0] := (imm8[0] == 0) ? a[63:0] : a[127:64]
+dst[127:64] := (imm8[1] == 0) ? b[63:0] : b[127:64]
+dst[191:128] := (imm8[2] == 0) ? a[191:128] : a[255:192]
+dst[255:192] := (imm8[3] == 0) ? b[191:128] : b[255:192]
+dst[MAX:256] := 0
 	</operation>
-	<instruction name="vpshufb"/>
+	<instruction name='vshufpd' form='ymm, ymm, ymm, imm'/>
 	<header>immintrin.h</header>
 </intrinsic>
   '''
