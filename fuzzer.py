@@ -36,9 +36,9 @@ def equal(a, b, ty):
       elem_bw = 64
     assert ty.bitwidth % elem_bw == 0
     num_elems = ty.bitwidth // elem_bw
-    return z3.And([
+    return z3.Or(a == b, z3.And([
         z3.fpAbs(extract_float(a, i, elem_bw) - extract_float(b, i, elem_bw)) < 1e-5
-        for i in range(num_elems)])
+        for i in range(num_elems)]))
   return a == b
 
 def check_compiled_spec_with_examples(param_vals, outs, out_types, inputs, expected_outs):
@@ -389,6 +389,7 @@ int main() {
     y.append(outputs)
 
   param_vals, outs = compile(spec)
+  print(outs[0])
   correct = check_compiled_spec_with_examples(param_vals, outs, out_types, x, y)
 
   return correct, True
@@ -440,5 +441,5 @@ dst[MAX:256] := 0
   '''
   intrin_node = ET.fromstring(sema)
   spec = get_spec_from_xml(intrin_node)
-  ok = fuzz_intrinsic(spec, num_tests=10)
+  ok = fuzz_intrinsic(spec, num_tests=1)
   print(ok)
