@@ -11,6 +11,7 @@ import math
 import z3
 import functools
 import operator
+from spec_serializer import dump_spec, load_spec
 
 src_path = os.path.dirname(os.path.abspath(__file__))
 
@@ -46,12 +47,18 @@ def check_compiled_spec_with_examples(param_vals, outs, out_types, inputs, expec
   s.set(timeout=20000)
   constraints = []
   for input, expected in zip(inputs, expected_outs):
-    preconditions = [x_sym == x_conc
-    for x_sym, x_conc in zip(param_vals, input)]
-    postconditions = [equal(z3.BitVecVal(y_expected, y.size()), y, out_type)
-        for y_expected, y, out_type in zip(expected, outs, out_types)]
+    subs = [(param, z3.BitVecVal(x, param.size())) for param, x in zip(param_vals, input)]
+    outs_concrete = [z3.substitute(out, *subs)
+        for out in outs]
     constraints.append(
-        z3.Implies(z3.And(preconditions), z3.And(postconditions)))
+        z3.And([equal(z3.BitVecVal(y_expected, y.size()), y, out_type)
+          for y_expected, y, out_type in zip(expected, outs_concrete, out_types)]))
+    #preconditions = [x_sym == x_conc
+    #for x_sym, x_conc in zip(param_vals, input)]
+    #postconditions = [equal(z3.BitVecVal(y_expected, y.size()), y, out_type)
+    #    for y_expected, y, out_type in zip(expected, outs, out_types)]
+    #constraints.append(
+    #    z3.Implies(z3.And(preconditions), z3.And(postconditions)))
   spec_correct = z3.And(constraints)
   s.add(z3.Not(spec_correct))
   correct = s.check() == z3.unsat
@@ -389,7 +396,6 @@ int main() {
     y.append(outputs)
 
   param_vals, outs = compile(spec)
-  print(outs[0])
   correct = check_compiled_spec_with_examples(param_vals, outs, out_types, x, y)
 
   return correct, True

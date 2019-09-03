@@ -1,4 +1,31 @@
+import z3
+import operator
+
+# TODO: rename this file to z3_utils
+def bool2bv(b):
+  return z3.If(b, z3.BitVecVal(1,1), z3.BitVecVal(0,1))
+
+uninterpreted_funcs = {}
+
+def get_uninterpreted_func(func_name, param_types):
+  if func_name in uninterpreted_funcs:
+    return uninterpreted_funcs[func_name]
+
+  func = z3.Function(func_name, *param_types)
+  uninterpreted_funcs[func_name] = func
+  return func
+
+BV32 = z3.BitVecSort(32)
+BV64 = z3.BitVecSort(64)
+
 precise = True
+
+def set_precision(_precise):
+  global precise
+  precise = _precise
+
+def get_precision():
+  return precise
 
 def fp_literal(val, bitwidth):
   if bitwidth == 32:
@@ -22,7 +49,6 @@ def bv2fp(x):
     assert bitwidth == 64
     ty = z3.Float64()
   return z3.fpBVToFP(x, ty)
-
 
 def binary_float_op(op):
   def impl(a, b, _=None):

@@ -4,6 +4,7 @@ import sys
 from interp import interpret
 from spec_configurer import configure_spec
 from compiler import compile
+from spec_serializer import dump_spec
 
 data_f = sys.argv[1]
 data_root = ET.parse(data_f)
@@ -19,6 +20,8 @@ num_interpreted = 0
 skipped = False
 skip_to = '_mm512_popcnt_epi16'
 skip_to = None
+
+outf = open('intrinsics.sema', 'w')
 
 for intrin in data_root.iter('intrinsic'):
   cpuid = intrin.find('CPUID')
@@ -108,8 +111,12 @@ for intrin in data_root.iter('intrinsic'):
       #if 'ELSE IF' in sema.text:
       #  continue
       spec = get_spec_from_xml(intrin)
-      ok, compiled, new_spec = configure_spec(spec)
-      #compile(spec)
+      ok, compiled, new_spec = configure_spec(spec, num_tests=100)
+      if ok:
+        spec_sema = dump_spec(new_spec, precision=False)
+        outf.write(intrin.attrib['name'] + '\n')
+        outf.write(spec_sema + '\n')
+        outf.flush()
       num_interpreted += compiled
       num_ok += ok
       print('\t',ok, num_ok,'/', num_interpreted, flush=True)
@@ -120,6 +127,9 @@ for intrin in data_root.iter('intrinsic'):
       print(sema.text)
       print(intrin.attrib['name'])
       break
+
+outf.close()
+
 print('Parsed:', num_parsed,
     'Skipped:', num_skipped,
     'Num unique inst forms parsed:', len(supported_insts),

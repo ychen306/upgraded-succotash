@@ -18,9 +18,6 @@ max_unroll_factor = max_vl * 2
 def unreachable():
   assert False
 
-def bool2bv(b):
-  return z3.If(b, z3.BitVecVal(1,1), z3.BitVecVal(0,1))
-
 class Environment:
   def __init__(self, func_defs=None):
     self.vars = {}
@@ -617,9 +614,6 @@ builtins = {
     'select': builtin_select,
     }
 
-BV32 = z3.BitVecSort(32)
-BV64 = z3.BitVecSort(64)
-
 f32_32 = BV32, BV32
 f64_32 = BV64, BV32
 f32_64 = BV32, BV64
@@ -717,16 +711,6 @@ builtin_convs = {
 unary_real_arith = {
     'SQRT',
     }
-
-uninterpreted_funcs = {}
-
-def get_uninterpreted_func(func_name, param_types):
-  if func_name in uninterpreted_funcs:
-    return uninterpreted_funcs[func_name]
-
-  func = z3.Function(func_name, *param_types)
-  uninterpreted_funcs[func_name] = func
-  return func
 
 def is_number(expr):
   return type(expr) == Number
