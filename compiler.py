@@ -228,6 +228,35 @@ class SymbolicSlice:
     old_val = env.get_value(self.var)
     bitwidth = old_val.size()
 
+    # fast path for when we can statically determine hi and lo idxs
+    lo_idx = z3.simplify(self.lo_idx)
+    hi_idx = z3.simplify(self.hi_idx)
+    if z3.is_bv_value(lo_idx) and z3.is_bv_value(hi_idx):
+      lo = lo_idx.as_long()
+      hi = hi_idx.as_long()
+      rhs = fix_bitwidth(rhs, hi-lo+1)
+      # old_val = HI MID LO, we update MID
+      if hi < bitwidth-1 and lo > 0:
+        hi_chunk = z3.Extract(bitwidth-1, hi+1, old_val)
+        mid_chunk = z3.If(pred, rhs, z3.Extract(hi, lo, old_val))
+        lo_chunk = z3.Extract(lo-1, 0, old_val)
+        new_val = z3.Concat(hi_chunk, mid_chunk, lo_chunk)
+      elif hi == bitwidth - 1 and lo > 0:
+        mid_chunk = z3.If(pred, rhs, z3.Extract(hi, lo, old_val))
+        lo_chunk = z3.Extract(lo-1, 0, old_val)
+        new_val = z3.Concat(mid_chunk, lo_chunk)
+      elif hi < bitwidth-1 and lo == 0:
+        hi_chunk = z3.Extract(bitwidth-1, hi+1, old_val)
+        mid_chunk = z3.If(pred, rhs, z3.Extract(hi, lo, old_val))
+        new_val = z3.Concat(hi_chunk, mid_chunk)
+      else:
+        assert hi >= bitwidth-1
+        assert lo == 0
+        new_val = rhs
+
+      env.set_value(self.var, new_val)
+      return 
+
     update_bitwidth = self.hi_idx - self.lo_idx + 1
     # TODO: remove this if
     # increase bitwidth for symbolic bitvector in case of overflow
@@ -906,20 +935,25 @@ RETURN k
 </intrinsic>
   '''
   sema = '''
-<intrinsic tech="Other" rettype='unsigned __int64' name='_mulx_u64'>
-	<type>Integer</type>
-	<CPUID>BMI2</CPUID>
-	<category>Arithmetic</category>
-	<parameter type='unsigned __int64' varname='a' />
-	<parameter type='unsigned __int64' varname='b' />
-	<parameter type='unsigned __int64*' varname='hi' />
-	<description>Multiply unsigned 64-bit integers "a" and "b", store the low 64-bits of the result in "dst", and store the high 64-bits in "hi". This does not read or write arithmetic flags.</description>
+<intrinsic tech='SSE' vexEq='TRUE' dontShowZeroUnmodMsg='TRUE' rettype='int' name='_mm_movemask_ps'>
+	<type>Floating Point</type>
+	<CPUID>SSE</CPUID>
+	<category>Miscellaneous</category>
+	<parameter varname='a' type='__m128' />
+	<description>Set each bit of mask "dst" based on the most significant bit of the corresponding packed single-precision (32-bit) floating-point element in "a".</description>
 	<operation>
-dst[63:0] := (a * b)[63:0]
-hi[63:0] := (a * b)[127:64]
+FOR j := 0 to 3
+	i := j*32
+	IF a[i+31]
+		dst[j] := 1
+	ELSE
+		dst[j] := 0
+	FI
+ENDFOR
+dst[MAX:4] := 0
 	</operation>
-	<instruction name='mulx' form='r64, r64, m64' />
-	<header>immintrin.h</header>
+	<instruction name='movmskps' form='r32, xmm'/>
+	<header>xmmintrin.h</header>
 </intrinsic>
   '''
 
