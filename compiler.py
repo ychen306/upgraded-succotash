@@ -252,8 +252,9 @@ class SymbolicSlice:
       else:
         assert hi >= bitwidth-1
         assert lo == 0
-        new_val = rhs
+        new_val = z3.If(pred, rhs, old_val)
 
+      assert new_val.size() == old_val.size()
       env.set_value(self.var, new_val)
       return 
 
@@ -504,7 +505,7 @@ def compile_bit_slice(bit_slice, env, pred):
     hi = z3.simplify(hi)
     src = env.get_value(slice_src.var)
     if is_constant(hi) and hi.as_long() >= src.size():
-      new_bitwidth = hi.as_long() + 1
+      new_bitwidth = min(max_vl, hi.as_long() + 1)
       extended = fix_bitwidth(src, new_bitwidth)
       env.set_value(slice_src.var, extended)
       src_ty = env.get_type(slice_src.var)
@@ -935,25 +936,22 @@ RETURN k
 </intrinsic>
   '''
   sema = '''
-<intrinsic tech='SSE' vexEq='TRUE' dontShowZeroUnmodMsg='TRUE' rettype='int' name='_mm_movemask_ps'>
-	<type>Floating Point</type>
-	<CPUID>SSE</CPUID>
-	<category>Miscellaneous</category>
-	<parameter varname='a' type='__m128' />
-	<description>Set each bit of mask "dst" based on the most significant bit of the corresponding packed single-precision (32-bit) floating-point element in "a".</description>
+<intrinsic tech="Other" rettype='unsigned int' name='_lzcnt_u32'>
+	<type>Integer</type>
+	<CPUID>LZCNT</CPUID>
+	<category>Bit Manipulation</category>
+	<parameter type='unsigned int' varname='a' />
+	<description>Count the number of leading zero bits in unsigned 32-bit integer "a", and return that count in "dst".</description>
 	<operation>
-FOR j := 0 to 3
-	i := j*32
-	IF a[i+31]
-		dst[j] := 1
-	ELSE
-		dst[j] := 0
-	FI
-ENDFOR
-dst[MAX:4] := 0
+tmp := 31
+dst := 0
+DO WHILE (tmp &gt;= 0 AND a[tmp] == 0)
+	tmp := tmp - 1
+	dst := dst + 1
+OD	
 	</operation>
-	<instruction name='movmskps' form='r32, xmm'/>
-	<header>xmmintrin.h</header>
+	<instruction name='lzcnt' form='r32, r32'/>
+	<header>immintrin.h</header>
 </intrinsic>
   '''
 
