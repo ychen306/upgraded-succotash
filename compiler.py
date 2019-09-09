@@ -234,7 +234,7 @@ class SymbolicSlice:
     if z3.is_bv_value(lo_idx) and z3.is_bv_value(hi_idx):
       lo = lo_idx.as_long()
       hi = hi_idx.as_long()
-      if hi < lo:
+      if hi < lo or lo >= bitwidth:
         return
       rhs = fix_bitwidth(rhs, hi-lo+1)
       # old_val = HI MID LO, we update MID
@@ -507,7 +507,7 @@ def compile_bit_slice(bit_slice, env, pred):
     hi = z3.simplify(hi)
     src = env.get_value(slice_src.var)
     if is_constant(hi) and hi.as_long() >= src.size():
-      new_bitwidth = min(max_vl, hi.as_long() + 1)
+      new_bitwidth = hi.as_long() + 1
       extended = fix_bitwidth(src, new_bitwidth)
       env.set_value(slice_src.var, extended)
       src_ty = env.get_type(slice_src.var)
@@ -938,21 +938,21 @@ RETURN k
 </intrinsic>
   '''
   sema = '''
-<intrinsic tech="AVX-512/KNC" rettype="__m512d" name="_mm512_add_pd">
-	<type>Floating Point</type>
-	<CPUID>AVX512F/KNCNI</CPUID>
-	<category>Arithmetic</category>
-	<parameter varname="a" type="__m512d"/>
-	<parameter varname="b" type="__m512d"/>
-	<description>Add packed double-precision (64-bit) floating-point elements in "a" and "b", and store the results in "dst".</description>
+<intrinsic tech="Other" rettype='unsigned int' name='_lzcnt_u32'>
+	<type>Integer</type>
+	<CPUID>LZCNT</CPUID>
+	<category>Bit Manipulation</category>
+	<parameter type='unsigned int' varname='a' />
+	<description>Count the number of leading zero bits in unsigned 32-bit integer "a", and return that count in "dst".</description>
 	<operation>
-FOR j := 0 to 7
-	i := j*64
-	dst[i+63:i] := a[i+63:i] + b[i+63:i]
-ENDFOR
-dst[MAX:512] := 0
+tmp := 31
+dst := 0
+DO WHILE (tmp &gt;= 0 AND a[tmp] == 0)
+	tmp := tmp - 1
+	dst := dst + 1
+OD	
 	</operation>
-	<instruction name='vaddpd' form='zmm {k}, zmm, zmm'/>
+	<instruction name='lzcnt' form='r32, r32'/>
 	<header>immintrin.h</header>
 </intrinsic>
   '''
