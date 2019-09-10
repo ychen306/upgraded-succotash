@@ -53,11 +53,11 @@ z3op_names = {
     z3.Z3_OP_EQ : '=',
     z3.Z3_OP_DISTINCT : 'distinct',
 
-    z3.Z3_OP_BSDIV_I:  'bvsdiv_i',
-    z3.Z3_OP_BUDIV_I:  'bvudiv_i',
-    z3.Z3_OP_BSREM_I:  'bvsrem_i',
-    z3.Z3_OP_BUREM_I:  'bvurem_i',
-    z3.Z3_OP_BSMOD_I:  'bvsmod_i',
+    z3.Z3_OP_BSDIV_I:  'bvsdiv',
+    z3.Z3_OP_BUDIV_I:  'bvudiv',
+    z3.Z3_OP_BSREM_I:  'bvsrem',
+    z3.Z3_OP_BUREM_I:  'bvurem',
+    z3.Z3_OP_BSMOD_I:  'bvsmod',
 
     ## z3.Z3_OP_SIGN_EXT: lambda args, expr: self.mgr.BVSExt(args[0], z3.get_payload(expr, 0)),
     ## z3.Z3_OP_ZERO_EXT: lambda args, expr: self.mgr.BVZExt(args[0], z3.get_payload(expr, 0)),
