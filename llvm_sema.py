@@ -87,6 +87,9 @@ def to_bitvec(f):
     return z3.If(b, z3.BitVecVal(1, 1), z3.BitVecVal(0, 1))
   return impl
 
+def get_llvm_op_name(op, out_bw):
+  return 'llvm_%s_%d' % (op, out_bw)
+
 # Not included:
 #    SExt,
 #    ZExt,
@@ -117,6 +120,13 @@ binary_ops = {
     'FDiv': binary_float_op('div'),
     'FRem': binary_float_op('rem'),
 
+    'Foeq': binary_float_cmp('eq'),
+    'Fone': binary_float_cmp('ne'),
+    'Fogt': binary_float_cmp('gt'),
+    'Foge': binary_float_cmp('ge'),
+    'Folt': binary_float_cmp('lt'),
+    'Fole': binary_float_cmp('le'),
+
     'Eq': to_bitvec(operator.eq),
     'Ne': to_bitvec(operator.ne),
     'Ugt': to_bitvec(z3.UGT),
@@ -127,6 +137,21 @@ binary_ops = {
     'Sge': to_bitvec(operator.ge),
     'Slt': to_bitvec(operator.lt),
     'Sle': to_bitvec(operator.le),
+    }
+
+float_ops = {
+    'FAdd',
+    'FSub',
+    'FMul',
+    'FDiv',
+    'FRem',
+
+    'Foeq',
+    'Fone',
+    'Fogt',
+    'Foge',
+    'Folt',
+    'Fole',
     }
 
 def unpack_vector(v, elem_bitwidth):

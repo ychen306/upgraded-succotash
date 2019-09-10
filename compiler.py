@@ -938,21 +938,28 @@ RETURN k
 </intrinsic>
   '''
   sema = '''
-<intrinsic tech="Other" rettype='unsigned int' name='_lzcnt_u32'>
-	<type>Integer</type>
-	<CPUID>LZCNT</CPUID>
-	<category>Bit Manipulation</category>
-	<parameter type='unsigned int' varname='a' />
-	<description>Count the number of leading zero bits in unsigned 32-bit integer "a", and return that count in "dst".</description>
+<intrinsic tech="AVX-512" rettype="__m512d" name="_mm512_mask_compress_pd">
+	<type>Floating Point</type>
+	<CPUID>AVX512F</CPUID>
+	<category>Swizzle</category>
+	<parameter varname="src" type="__m512d"/>
+	<parameter varname="k" type="__mmask8"/>
+	<parameter varname="a" type="__m512d"/>
+	<description>Contiguously store the active double-precision (64-bit) floating-point elements in "a" (those with their respective bit set in writemask "k") to "dst", and pass through the remaining elements from "src".</description>
 	<operation>
-tmp := 31
-dst := 0
-DO WHILE (tmp &gt;= 0 AND a[tmp] == 0)
-	tmp := tmp - 1
-	dst := dst + 1
-OD	
+size := 64
+m := 0
+FOR j := 0 to 7
+	i := j*64
+	IF k[j]
+		dst[m+size-1:m] := a[i+63:i]
+		m := m + size
+	FI
+ENDFOR
+dst[511:m] := src[511:m]
+dst[MAX:512] := 0
 	</operation>
-	<instruction name='lzcnt' form='r32, r32'/>
+	<instruction name='vcompresspd' form='zmm {k}, zmm'/>
 	<header>immintrin.h</header>
 </intrinsic>
   '''
