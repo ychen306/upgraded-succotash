@@ -481,7 +481,8 @@ def compile(spec):
       retval = env.get_value('dst')
     else:
       retval = env.get_value('k')
-    dst = z3.simplify(retval)
+    out_size = intrinsic_types[spec.rettype].bitwidth
+    dst = z3.simplify(fix_bitwidth(retval, out_size))
     outputs = [dst] + outputs
   return param_vals, outputs
 
@@ -938,28 +939,21 @@ RETURN k
 </intrinsic>
   '''
   sema = '''
-<intrinsic tech="AVX-512" rettype="__m512d" name="_mm512_mask_compress_pd">
-	<type>Floating Point</type>
+<intrinsic tech="AVX-512" rettype="__m256i" name="_mm256_broadcast_i32x4">
+	<CPUID>AVX512VL</CPUID>
 	<CPUID>AVX512F</CPUID>
-	<category>Swizzle</category>
-	<parameter varname="src" type="__m512d"/>
-	<parameter varname="k" type="__mmask8"/>
-	<parameter varname="a" type="__m512d"/>
-	<description>Contiguously store the active double-precision (64-bit) floating-point elements in "a" (those with their respective bit set in writemask "k") to "dst", and pass through the remaining elements from "src".</description>
+	<category>Miscellaneous</category>
+	<parameter varname="a" type="__m128i"/>
+	<description>Broadcast the 4 packed 32-bit integers from "a" to all elements of "dst".</description>
 	<operation>
-size := 64
-m := 0
 FOR j := 0 to 7
-	i := j*64
-	IF k[j]
-		dst[m+size-1:m] := a[i+63:i]
-		m := m + size
-	FI
+	i := j*32
+	n := (j % 4)*32
+	dst[i+31:i] := a[n+31:n]
 ENDFOR
-dst[511:m] := src[511:m]
-dst[MAX:512] := 0
+dst[MAX:256] := 0
 	</operation>
-	<instruction name='vcompresspd' form='zmm {k}, zmm'/>
+	<instruction name="vbroadcasti32x4"/>
 	<header>immintrin.h</header>
 </intrinsic>
   '''
