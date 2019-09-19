@@ -475,14 +475,15 @@ def compile(spec):
       break
     compile_stmt(stmt, env)
 
-  outputs = [z3.simplify(env.get_value(out_param)) for out_param in out_params]
+  outputs = [z3.simplify(env.get_value(out_param), elim_sign_ext=False) for out_param in out_params]
   if not returns_void:
     if not returns_mask:
       retval = env.get_value('dst')
     else:
       retval = env.get_value('k')
     out_size = intrinsic_types[spec.rettype].bitwidth
-    dst = z3.simplify(fix_bitwidth(retval, out_size))
+    dst = z3.simplify(fix_bitwidth(retval, out_size), elim_sign_ext=False)
+    print(dst.sexpr())
     outputs = [dst] + outputs
   return param_vals, outputs
 
@@ -939,22 +940,24 @@ RETURN k
 </intrinsic>
   '''
   sema = '''
-<intrinsic tech="AVX-512" rettype="__m256i" name="_mm256_broadcast_i32x4">
-	<CPUID>AVX512VL</CPUID>
-	<CPUID>AVX512F</CPUID>
-	<category>Miscellaneous</category>
-	<parameter varname="a" type="__m128i"/>
-	<description>Broadcast the 4 packed 32-bit integers from "a" to all elements of "dst".</description>
+<intrinsic tech="Other" rettype='int' name='_mm_popcnt_u32'>
+	<type>Integer</type>
+	<CPUID>POPCNT</CPUID>
+	<category>Bit Manipulation</category>
+	<parameter varname='a' type='unsigned int'/>
+	<description>
+		Count the number of bits set to 1 in unsigned 32-bit integer "a", and return that count in "dst". 
+	</description>
 	<operation>
-FOR j := 0 to 7
-	i := j*32
-	n := (j % 4)*32
-	dst[i+31:i] := a[n+31:n]
+dst := 0
+FOR i := 0 to 31
+	IF a[i]
+		dst := dst + 1
+	FI
 ENDFOR
-dst[MAX:256] := 0
 	</operation>
-	<instruction name="vbroadcasti32x4"/>
-	<header>immintrin.h</header>
+	<instruction name='popcnt' form='r32, r32'/>
+	<header>nmmintrin.h</header>
 </intrinsic>
   '''
 
