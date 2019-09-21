@@ -1,4 +1,4 @@
-from ast import *
+from sema_ast import *
 from collections import namedtuple
 import operator
 from bitstring import Bits, BitArray, CreationError

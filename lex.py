@@ -1,5 +1,5 @@
 import ply.lex as lex
-from ast import Number, Var
+from sema_ast import Number, Var
 
 # TODO: lex hex literal
 

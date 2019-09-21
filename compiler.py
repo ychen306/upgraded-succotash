@@ -5,7 +5,7 @@ from intrinsic_types import (
     intrinsic_types, max_vl,
     IntegerType, FloatType, DoubleType,
     is_float, is_literal)
-from ast import *
+from sema_ast import *
 from fp_sema import *
 import z3
 

@@ -1,4 +1,4 @@
-from ast import Parameter, Spec
+from sema_ast import Parameter, Spec
 from parser import parse
 
 std_funcs = '''

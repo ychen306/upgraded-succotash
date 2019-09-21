@@ -1,7 +1,7 @@
 import ply.yacc as yacc
 
 from lex import tokens
-from ast import *
+from sema_ast import *
 
 def new_binary_expr(parser, op, a, b):
   expr_id = gen_unique_id(parser)

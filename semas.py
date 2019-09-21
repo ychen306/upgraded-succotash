@@ -1,3 +1,7 @@
+from fp_sema import set_precision
+
+set_precision(False)
+
 from spec_serializer import load_spec
 from llvm_sema import binary_ops, float_ops, get_llvm_op_name
 import itertools
@@ -16,8 +20,11 @@ with open('intrinsics.sema') as sema_f:
     spec = next(sema_f)
     if 'fp' in spec:
       continue
-    if 'mask' not in intrin_name:
-      continue
+
+    #if 'mask' not in intrin_name:
+    #  continue
+    #if 'add_epi32' not in intrin_name:
+    #  continue
     #if intrin_name.strip() == '_ktest_mask8_u8':
     #  f = load_spec(spec)[1][0]
     #  z3.simplify(f)
@@ -25,8 +32,10 @@ with open('intrinsics.sema') as sema_f:
     #  print('=============')
     #  print(f.sexpr())
     #  exit(1)
-    semas[intrin_name.strip()] = load_spec(spec)
 
+    sema = load_spec(spec)
+    semas[intrin_name.strip()] = sema
+    _, ys = sema
 
 # get semantics of llvm binary instructions
 # note that we ignore vectorized instructions 
@@ -91,3 +100,11 @@ for bw_in, bw_out in itertools.product(bitwidths, bitwidths):
   else:
     trunc_name, trunc_sema = get_trunc_sema(bw_in, bw_out)
     semas[trunc_name] = trunc_sema
+
+# return a map <ret type> -> [ insts ]
+def categorize_insts(semas):
+  categories = defaultdict(list)
+  for inst, (_, outs) in semas.items():
+    out_sig = tuple(out.size() for out in outs)
+    categories[out_sig].append(inst)
+  return categories

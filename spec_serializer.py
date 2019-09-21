@@ -1,9 +1,13 @@
 import z3
+from z3_utils import *
 from compiler import compile
 from fp_sema import set_precision, get_precision
+import operator
 import json
 
+# TODO: rename spec to sema for consistency
 def dump_spec(spec, precision=True):
+  # FIXME: modify this to mark which input must be compile time constant
   orig_precision = get_precision()
   set_precision(precision)
   param_vals, outs = compile(spec)
