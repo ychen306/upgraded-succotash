@@ -149,17 +149,6 @@ def sample_expr(rounds):
   out_size = random.choice(bitwidths)
   return sample_expr_with_inputs((out_size,), rounds, sigs, semas, categories, live_ins=inputs)
 
-def gen_exprs(expr_generator, n):
-  data = []
-  for _ in tqdm(range(n)):
-    e, insts = expr_generator()
-    g, ops, params = expr2graph(e)
-    inst_ids = unpack([insts2ids[i] for i in insts], num_insts)
-    weights = torch.tensor([num_insts/len(insts) if x==1 else 1 for x in inst_ids])
-    weights.div_(weights.sum())
-    data.append((g, ops, params, inst_ids, weights))
-  return data
-
 def gen_expr(*args):
   while True:
     e, insts = sample_expr(2)
@@ -178,8 +167,7 @@ if __name__ == '__main__':
 
   pool = Pool(20)
 
-  num_exprs = 10000000
-  batch_size = 1000
+  num_exprs = 100
   pbar = iter(tqdm(range(num_exprs)))
 
   with open('exprs.json', 'w') as outf:

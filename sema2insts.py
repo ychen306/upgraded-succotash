@@ -151,12 +151,15 @@ def unpack(ids, num_elems):
 insts2ids = { inst : i for i, inst in enumerate(semas) }
 num_insts = len(insts2ids)
 
-def gen_data(expr_generator, n):
+def load_data(expr_generator, n):
+  '''
+  expr_generator : () -> (<serialized expr>, <insts used to produce the expr>)
+  '''
   data = []
   print('generating expressions')
   for _ in tqdm(range(n)):
     e, insts = expr_generator()
-    g, ops, params = expr2graph(serialize_expr(e))
+    g, ops, params = expr2graph(e)
     inst_ids = unpack([insts2ids[i] for i in insts], num_insts)
     weights = torch.tensor([num_insts/len(insts) if x==1 else 1 for x in inst_ids])
     weights.div_(weights.sum())
@@ -189,28 +192,21 @@ def gen_expr():
         z3.is_true(e) or
         z3.is_false(e) or
         get_z3_app(e) == z3.Z3_OP_UNINTERPRETED):
-      return e, insts
+      return serialize_expr(e), insts
 
-num_train = 100000
-num_test = 1000
+num_train = 1000
+num_test = 100
 epochs = 20
 
 if __name__ == '__main__':
-  # simple tests to make sure the models have the right shapes
-  #x = z3.BitVec('x', 32)
-  #y = x * x
-  #e = y * y + x
-  #op = torch.tensor(get_op_id(get_z3_app(e))).long()
-  #params = get_canonicalized_params(e)
-  #g, ops, params = expr2graph(e)
-  #model = Sema2Insts(10)
-  #data = [(g, ops, params, unpack([1, 4, 5], 10))]
-  #train(model, data)
+  import json
 
   model = Sema2Insts(num_insts)
-  gen_data(gen_expr, 1000)
-  exit(1)
-  data = gen_data(gen_expr, num_train)
-  test_data = gen_data(gen_expr, num_test)
+
+  with open('exprs.json') as f:
+    serialized_data = [json.loads(line) for line in f]
+  
+  data = load_data(lambda : serialized_data.pop(), len(serialized_data))
+  test_data = load_data(gen_expr, num_test)
   validator = lambda model: validate(model, test_data)
   train(model, data, validator=validator, epochs=epochs)
