@@ -8,6 +8,7 @@ from specs import specs
 import random
 import z3
 from z3_utils import askey
+from z3_exprs import *
 
 InputType = namedtuple('InputType', ['bitwidth', 'is_constant'])
 
@@ -148,15 +149,40 @@ def sample_expr(rounds):
   out_size = random.choice(bitwidths)
   return sample_expr_with_inputs((out_size,), rounds, sigs, semas, categories, live_ins=inputs)
 
+def gen_exprs(expr_generator, n):
+  data = []
+  for _ in tqdm(range(n)):
+    e, insts = expr_generator()
+    g, ops, params = expr2graph(e)
+    inst_ids = unpack([insts2ids[i] for i in insts], num_insts)
+    weights = torch.tensor([num_insts/len(insts) if x==1 else 1 for x in inst_ids])
+    weights.div_(weights.sum())
+    data.append((g, ops, params, inst_ids, weights))
+  return data
+
+def gen_expr(*args):
+  while True:
+    e, insts = sample_expr(2)
+    e = z3.simplify(e)
+    if not (z3.is_bv_value(e) or
+        z3.is_true(e) or
+        z3.is_false(e) or
+        get_z3_app(e) == z3.Z3_OP_UNINTERPRETED):
+      return serialize_expr(e), insts
+
 if __name__ == '__main__':
-  x, y, z = z3.BitVecs('x y z', 512)
-  from frozendict import frozendict
-  print(list(categories.keys()))
-  #e, used_insts = sample_expr_with_inputs((64,), 2, sigs, semas, categories, live_ins=[x,y,z])
-  #e, used_insts = sample_expr(2, sigs, semas, categories)
-  #print(z3.simplify(e[0], bv_ite2id=True))
-  #print(used_insts)
-  for i in range(10000):
-    #e, used_insts = sample_expr(2, sigs, semas, categories)
-    e, used_insts = sample_expr(2)#, sigs, semas, categories)
-    print(used_insts)
+  from multiprocessing.pool import Pool
+  from z3_exprs import serialize_expr
+  from tqdm import tqdm
+  import json
+
+  pool = Pool(20)
+
+  num_exprs = 10000000
+  batch_size = 1000
+  pbar = iter(tqdm(range(num_exprs)))
+
+  with open('exprs.json', 'w') as outf:
+    for e, insts in pool.imap_unordered(gen_expr, range(num_exprs)):
+      outf.write(json.dumps((e, insts))+'\n')
+      next(pbar)

@@ -242,6 +242,7 @@ def fuzz_intrinsic_once(outf, spec):
   out_param_types = []
   inst_form = spec.inst_form.split(', ')
   no_imm8 = 'imm8' not in (param.name for param in spec.params)
+  # TODO: refactor out this signature parsing logic
   for i, param in enumerate(spec.params):
     if ((no_imm8 and i < len(inst_form) and inst_form[i] == 'imm') or
         param.name == 'imm8'):

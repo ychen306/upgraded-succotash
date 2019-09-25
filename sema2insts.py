@@ -13,46 +13,9 @@ from expr_sampler import sample_expr, semas
 from tqdm import tqdm
 
 import z3
-from z3_utils import z3op_names, get_z3_app, askey
+from z3_utils import get_z3_app
 
-# z3op_names doesn't include extract, zext, or sext
-ops = list(z3op_names.keys())
-ops.extend([z3.Z3_OP_EXTRACT, z3.Z3_OP_ZERO_EXT,
-  z3.Z3_OP_SIGN_EXT, z3.Z3_OP_UNINTERPRETED, z3.Z3_OP_BNUM])
-# plus 1 for unknown
-num_ops = len(ops) + 1
-
-ops2ids = { op : i for i, op in enumerate(ops) } 
-
-def get_op_id(op):
-  id = ops2ids.get(op, None)
-  if id is not None:
-    return id
-  return num_ops-1
-
-max_num_params = 3
-
-bitwidths = [1,2,4,8,16,32,64,128,256,512]
-# plus one for ``others''
-num_bitwidths = len(bitwidths) + 1
-
-bws2ids = { bw : i for i, bw in enumerate(bitwidths) }
-def get_bitwidth_id(bw):
-  id = bws2ids.get(bw, None)
-  if id is not None:
-    return id
-  return num_bitwidths-1
-
-def get_canonicalized_params(expr):
-  params = [get_bitwidth_id(bw) for bw in expr.params()]
-  while len(params) < max_num_params-1:
-    params.append(num_bitwidths-1)
-  if z3.is_bv(expr):
-    params.append(get_bitwidth_id(expr.size()))
-  else:
-    assert z3.is_bool(expr)
-    params.append(get_bitwidth_id(1))
-  return params
+from z3_exprs import num_ops, num_bitwidths, max_num_params, serialize_expr
 
 class OpEmb(nn.Module):
   '''
@@ -100,6 +63,8 @@ class Sema2Insts(nn.Module):
         nn.ReLU(),
         nn.Linear(emb_size, emb_size),
         nn.ReLU(),
+        nn.Linear(emb_size, emb_size),
+        nn.ReLU(),
         nn.Linear(emb_size, num_insts))
 
   def forward(self, g, ops, params):
@@ -110,43 +75,14 @@ class Sema2Insts(nn.Module):
       conv_outs.append(states.sum(dim=0))
     return torch.sigmoid(self.mlp(torch.cat(conv_outs)))
 
-def expr2graph(e):
+def expr2graph(serialized_expr):
   '''
   <z3 expr> -> <graph>, <features>
   '''
-  # <z3 expr> -> <id> 
-  exprs2ids = {}
-  edges = []
-
-  ops = []
-  # list of params
-  params = [[] for _ in range(max_num_params)]
-
-  def populate_graph(e):
-    '''
-    polulate subgraph reachable from `e', also return id of `e'
-    '''
-    k = askey(e)
-    if k in exprs2ids:
-      return exprs2ids[k]
-
-    id = len(exprs2ids)
-    exprs2ids[k] = id
-
-    ops.append(get_op_id(get_z3_app(e)))
-    for i, p in enumerate(get_canonicalized_params(e)):
-      params[i].append(p)
-
-    for e2 in e.children():
-      id2 = populate_graph(e2)
-      edge = id, id2
-      edges.append(edge)
-    return id
-
-  populate_graph(e)
+  edges, ops, params = serialized_expr
   srcs, dsts = zip(*edges)
   g = DGLGraph()
-  g.add_nodes(len(exprs2ids))
+  g.add_nodes(len(ops))
   g.add_edges(srcs, dsts)
   return g, torch.LongTensor(ops), [torch.LongTensor(p) for p in params]
 
@@ -220,7 +156,7 @@ def gen_data(expr_generator, n):
   print('generating expressions')
   for _ in tqdm(range(n)):
     e, insts = expr_generator()
-    g, ops, params = expr2graph(e)
+    g, ops, params = expr2graph(serialize_expr(e))
     inst_ids = unpack([insts2ids[i] for i in insts], num_insts)
     weights = torch.tensor([num_insts/len(insts) if x==1 else 1 for x in inst_ids])
     weights.div_(weights.sum())
@@ -255,8 +191,8 @@ def gen_expr():
         get_z3_app(e) == z3.Z3_OP_UNINTERPRETED):
       return e, insts
 
-num_train = 5000
-num_test = 300
+num_train = 100000
+num_test = 1000
 epochs = 20
 
 if __name__ == '__main__':
@@ -272,6 +208,8 @@ if __name__ == '__main__':
   #train(model, data)
 
   model = Sema2Insts(num_insts)
+  gen_data(gen_expr, 1000)
+  exit(1)
   data = gen_data(gen_expr, num_train)
   test_data = gen_data(gen_expr, num_test)
   validator = lambda model: validate(model, test_data)
