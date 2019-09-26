@@ -7,9 +7,9 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.autograd import Variable
 from torch.utils.data import DataLoader
+from expr_sampler import sample_expr, semas
 from dgl.nn.pytorch.conv import GatedGraphConv, GINConv
 from dgl import DGLGraph
-from expr_sampler import sample_expr, semas
 from tqdm import tqdm
 
 import z3
@@ -184,6 +184,7 @@ def get_precision_and_recall(predicted, actual):
     precision = float(tp) / float(tp + fp)
   return recall, precision
 
+
 def gen_expr():
   while True:
     e, insts = sample_expr(2)
@@ -194,19 +195,34 @@ def gen_expr():
         get_z3_app(e) == z3.Z3_OP_UNINTERPRETED):
       return serialize_expr(e), insts
 
+num_train = 1000000
+num_test = 1000
+
 num_train = 1000
 num_test = 100
+
 epochs = 20
+gen_new_expr = False
 
 if __name__ == '__main__':
   import json
 
   model = Sema2Insts(num_insts)
 
+  # FIXME: check that we have enough expressions in `exprs.json'
   with open('exprs.json') as f:
-    serialized_data = [json.loads(line) for line in f]
+    print('Loading serialized expressions')
+    n = num_train + num_test
+    pbar = iter(tqdm(range(n)))
+    serialized_data = []
+    for line in f:
+      serialized_data.append(json.loads(line))
+      next(pbar)
+      if len(serialized_data) >= n:
+        break
   
-  data = load_data(lambda : serialized_data.pop(), len(serialized_data))
-  test_data = load_data(gen_expr, num_test)
+  load_one_expr = lambda : serialized_data.pop()
+  data = load_data(load_one_expr, num_train)
+  test_data = load_data(load_one_expr, num_test)
   validator = lambda model: validate(model, test_data)
   train(model, data, validator=validator, epochs=epochs)
