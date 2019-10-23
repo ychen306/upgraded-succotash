@@ -263,27 +263,24 @@ def get_loss_for_target(synthesizer, target, obs, insts, orig_log_probs, perf):
   # imp sampl. weights = prodcut p(new_target)/p(orig_target)
   weights = torch.exp(
       torch.cumsum(log_probs, dim=0) -
-      torch.cumsum(orig_log_probs, dim=0) - 1e-12)
-  weights.div_(weights.sum())
+      torch.cumsum(orig_log_probs, dim=0))
+  weights.div_(weights.sum()+1e-12)
   baselines = torch.stack(baselines)
-  #policy_loss = (-log_probs * weights.detach() * (-baselines.detach() + perf)).mean()
-  #value_loss = (baselines - perf).pow(2).mean()
-  #return policy_loss + value_loss
-  policy_loss = (-log_probs * weights.detach() * perf).mean()
+  policy_loss = (-log_probs * weights.detach() * perf).sum()
   return policy_loss
 
-def train(optimizer, synthesizer, steps=4, batch_size=8, epoch=100000):
+def train(optimizer, synthesizer, steps=5, batch_size=16, epoch=50000):
   pbar = tqdm(range(epoch))
-  for _ in pbar:
+  for i in pbar:
     losses = []
     num_synthesized = 0
+    target, inputs = gen_synth_problem()
     for _ in range(batch_size):
-      target, inputs = gen_synth_problem()
       obs, insts, perf, result, orig_log_probs = synthesizer.synthesize(target, steps, inputs)
       if perf > 0:
         num_synthesized += 1
         losses.append(get_loss_for_target(synthesizer, target, obs, insts, orig_log_probs, perf))
-      if not is_trival_expression(result):
+      elif not is_trival_expression(result):
         losses.append(get_loss_for_target(synthesizer, result, obs, insts, orig_log_probs, 1/len(insts)))
     if len(losses) == 0:
       continue
@@ -294,13 +291,13 @@ def train(optimizer, synthesizer, steps=4, batch_size=8, epoch=100000):
     optimizer.step()
 
     pbar.set_description("loss: %.4f, num synth'd: %d/%d" % (float(loss), num_synthesized, batch_size))
+    if i % 5 == 0:
+      torch.save(synthesizer.state_dict(), 'synth.model')
 
 if __name__ == '__main__':
   '''small tests to make sure shapes match up'''
 
   synthesizer = Synthesizer(InstPool(sigs=sigs, semas=semas))
-  #target, inputs = gen_synth_problem()
-  #synthesizer.synthesize(target, steps=4, liveins=inputs)
-  #optimizer = optim.Adam(synthesizer.parameters(), lr=1e-5)
-  optimizer = optim.SGD(synthesizer.parameters(), lr=0.01, momentum=0.9)
+  synthesizer.load_state_dict(torch.load('synth.model'))
+  optimizer = optim.Adam(synthesizer.parameters(), lr=5e-5)
   train(optimizer, synthesizer)
