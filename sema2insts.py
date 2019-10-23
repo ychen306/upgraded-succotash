@@ -30,7 +30,7 @@ class OpEmb(nn.Module):
     self.param_embs = nn.Embedding(num_bitwidths, emb_size)
     self.mlp = nn.Sequential(
         nn.Linear(emb_size * (1 + max_num_params), emb_size),
-        nn.ReLU(),
+        nn.LeakyReLU(),
         nn.Linear(emb_size, emb_size))
   
   def forward(self, op, params):
@@ -42,30 +42,25 @@ class OpEmb(nn.Module):
     param_embs = [self.param_embs(p) for p in params]
     return self.mlp(torch.cat([op_emb] + param_embs, dim=1))
 
-class Sema2Insts(nn.Module):
-  def __init__(self, num_insts, emb_size=128, num_layers=3):
+class SemaEmb(nn.Module):
+  def __init__(self, emb_size=128, num_layers=3):
     super().__init__()
-    self.num_insts = num_insts
     self.op_emb = OpEmb(emb_size)
     self.edge_func = nn.Sequential(
         nn.Linear(emb_size, emb_size),
-        nn.ReLU()
+        nn.LeakyReLU()
         )
     self.conv_layers = nn.ModuleList()
     for _ in range(num_layers):
       self.conv_layers.append(
           GINConv(apply_func=nn.Sequential(
               nn.Linear(emb_size, emb_size),
-              nn.ReLU()),
+              nn.LeakyReLU()),
             aggregator_type='mean'))
     self.mlp = nn.Sequential(
         nn.Linear(emb_size * num_layers, emb_size),
-        nn.ReLU(),
-        nn.Linear(emb_size, emb_size),
-        nn.ReLU(),
-        nn.Linear(emb_size, emb_size),
-        nn.ReLU(),
-        nn.Linear(emb_size, num_insts))
+        nn.LeakyReLU(),
+        nn.Linear(emb_size, emb_size))
 
   def forward(self, g, ops, params):
     states = self.op_emb(ops, params)
@@ -73,18 +68,32 @@ class Sema2Insts(nn.Module):
     for conv in self.conv_layers:
       states = conv(g, states)
       conv_outs.append(states.sum(dim=0))
-    return torch.sigmoid(self.mlp(torch.cat(conv_outs)))
+    return self.mlp(torch.cat(conv_outs)), states
+
+class Sema2Insts(nn.Module):
+  def __init__(self, num_insts, emb_size=128, num_layers=3):
+    super().__init__()
+    self.sema_emb = SemaEmb(emb_size, num_layers)
+    self.mlp = nn.Sequential(
+        nn.Linear(emb_size, emb_size),
+        nn.LeakyReLU(),
+        nn.Linear(emb_size, num_insts))
+
+  def forward(self, g, ops, params):
+    # drop the node embeddings
+    emb, _ = self.sema_emb(g, ops, params)
+    return torch.sigmoid(self.mlp(emb))
 
 def expr2graph(serialized_expr):
   '''
   <z3 expr> -> <graph>, <features>
   '''
-  edges, ops, params = serialized_expr
+  edges, ops, params, expr_ids = serialized_expr
   srcs, dsts = zip(*edges)
   g = DGLGraph()
   g.add_nodes(len(ops))
   g.add_edges(srcs, dsts)
-  return g, torch.LongTensor(ops), [torch.LongTensor(p) for p in params]
+  return g, torch.LongTensor(ops), [torch.LongTensor(p) for p in params], torch.LongTensor(expr_ids)
 
 def mean(xs):
   return sum(xs) / len(xs)
@@ -107,7 +116,8 @@ def train(model, data, validator, batch_size=4, epochs=10):
   ids = list(range(len(data)))
   dl = DataLoader(ids, batch_size=batch_size, shuffle=True)
   criterion = nn.BCELoss(reduction='none')
-  optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+  #optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+  optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
   for epoch in range(epochs):
     pbar = tqdm(dl)
@@ -150,6 +160,7 @@ def unpack(ids, num_elems):
 
 insts2ids = { inst : i for i, inst in enumerate(semas) }
 num_insts = len(insts2ids)
+ids2insts = [inst for inst in semas]
 
 def load_data(expr_generator, n):
   '''
@@ -159,7 +170,7 @@ def load_data(expr_generator, n):
   print('generating expressions')
   for _ in tqdm(range(n)):
     e, insts = expr_generator()
-    g, ops, params = expr2graph(e)
+    g, ops, params, _ = expr2graph(e)
     inst_ids = unpack([insts2ids[i] for i in insts], num_insts)
     weights = torch.tensor([num_insts/len(insts) if x==1 else 1 for x in inst_ids])
     weights.div_(weights.sum())
@@ -184,21 +195,15 @@ def get_precision_and_recall(predicted, actual):
     precision = float(tp) / float(tp + fp)
   return recall, precision
 
-
-def gen_expr():
-  while True:
-    e, insts = sample_expr(2)
-    e = z3.simplify(e)
-    if not (z3.is_bv_value(e) or
-        z3.is_true(e) or
-        z3.is_false(e) or
-        get_z3_app(e) == z3.Z3_OP_UNINTERPRETED):
-      return serialize_expr(e), insts
+def sema2insts(model, e, accept=lambda p: p > 0.5):
+  g, ops, params = expr2graph(serialize_expr(e))
+  pred = model(g, ops, params)
+  return [(ids2insts[i], float(p)) for i, p in enumerate(pred.reshape(-1)) if accept(p)]
 
 num_train = 1000000
 num_test = 1000
 
-num_train = 1000
+num_train = 100
 num_test = 100
 
 epochs = 20

@@ -7,8 +7,10 @@ from semas import semas
 from specs import specs
 import random
 import z3
-from z3_utils import askey
+from z3_utils import askey, eval_z3_expr
 from z3_exprs import *
+
+from synth_utils import get_usable_insts
 
 InputType = namedtuple('InputType', ['bitwidth', 'is_constant'])
 
@@ -26,12 +28,13 @@ def get_intrinsic_signature(spec):
   inst_form = spec.inst_form.split(', ')
   no_imm8 = 'imm8' not in (param.name for param in spec.params)
   for i, param in enumerate(spec.params):
+    bitwidth = get_ctype_bitwidth(param.type)
+
     if ((no_imm8 and i < len(inst_form) and inst_form[i] == 'imm') or
         param.name == 'imm8'):
-      input_types.append(InputType(bitwidth=8, is_constant=True))
+      input_types.append(InputType(bitwidth=bitwidth, is_constant=True))
       continue
 
-    bitwidth = get_ctype_bitwidth(param.type)
     if param.type.endswith('*'):
       output_sizes.append(bitwidth)
     else:
@@ -50,25 +53,6 @@ def categorize_by_output(sigs):
   for inst, (_, out_sig) in sigs.items():
     categories[out_sig].append(inst)
   return categories
-
-def get_usable_insts(insts, sigs, available_values):
-  '''
-  Return the subset of `insts` that we can use, given available values
-  '''
-  # mapping <bitwidth> -> [<val>]
-  bw2vals = defaultdict(list)
-  for v in available_values:
-    bw2vals[v.size()].append(v)
-
-  usable_insts = []
-  for inst in insts:
-    in_types, _ = sigs[inst]
-    if all(ty.bitwidth in bw2vals or ty.is_constant for ty in in_types):
-      usable_insts.append(inst)
-  return usable_insts
-
-def eval_z3_expr(e, args):
-  return z3.simplify(z3.substitute(e, *args))
 
 # FIXME: make this run faster
 def sample_expr_with_inputs(out_sig, rounds, sigs, semas, categories, live_ins):
@@ -141,17 +125,19 @@ categories = categorize_by_output(sigs)
 
 def sample_expr(rounds):
   bitwidths = [8, 16, 32, 64, 128, 256, 512]
-  num_inputs = int(random.gauss(4, 1))
+  bitwidths = [8, 16, 32, 64]
+  num_inputs = int(random.gauss(4, 1)+1)
   inputs = []
   for i in range(num_inputs):
     bw = random.choice(bitwidths)
     inputs.append(z3.BitVec('x_%d_%d' % (i, bw), bw))
   out_size = random.choice(bitwidths)
-  return sample_expr_with_inputs((out_size,), rounds, sigs, semas, categories, live_ins=inputs)
+  e, insts = sample_expr_with_inputs((out_size,), rounds, sigs, semas, categories, live_ins=inputs)
+  return e, insts, inputs
 
 def gen_expr(*args):
   while True:
-    e, insts = sample_expr(2)
+    e, insts, _ = sample_expr(2)
     e = z3.simplify(e)
     if not (z3.is_bv_value(e) or
         z3.is_true(e) or
@@ -165,12 +151,13 @@ if __name__ == '__main__':
   from tqdm import tqdm
   import json
 
-  pool = Pool(20)
+  pool = Pool(1)#26 * 2 - 4)
 
-  num_exprs = 100
+  num_exprs = 1000
   pbar = iter(tqdm(range(num_exprs)))
 
   with open('exprs.json', 'w') as outf:
-    for e, insts in pool.imap_unordered(gen_expr, range(num_exprs)):
+    #for e, insts in pool.imap_unordered(gen_expr, range(num_exprs)):
+    for e, insts in map(gen_expr, range(num_exprs)):
       outf.write(json.dumps((e, insts))+'\n')
       next(pbar)

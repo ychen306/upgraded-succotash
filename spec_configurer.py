@@ -52,32 +52,27 @@ if __name__ == '__main__':
   from manual_parser import get_spec_from_xml
 
   sema = '''
-<intrinsic tech="AVX-512" rettype="__m512i" name="_mm512_maskz_shuffle_epi8">
-	<type>Integer</type>
-	<CPUID>AVX512BW</CPUID>
-	<category>Miscellaneous</category>
-	<parameter varname="k" type="__mmask64"/>
-	<parameter varname="a" type="__m512i"/>
-	<parameter varname="b" type="__m512i"/>
-	<description>Shuffle packed 8-bit integers in "a" according to shuffle control mask in the corresponding 8-bit element of "b", and store the results in "dst" using zeromask "k" (elements are zeroed out when the corresponding mask bit is not set).</description>
-	<operation>
-FOR j := 0 to 63
-	i := j*8
-	IF k[j]
-		IF b[i+7] == 1
-			dst[i+7:i] := 0
-		ELSE
-			index[5:0] := b[i+3:i] + (j &amp; 0x30)
-			dst[i+7:i] := a[index*8+7:index*8]
-		FI
-	ELSE
-		dst[i+7:i] := 0
-	FI
+  <intrinsic tech='SSSE3' vexEq='TRUE' rettype='__m128i' name='_mm_sign_epi8'>
+        <type>Integer</type>
+        <CPUID>SSSE3</CPUID>
+        <category>Arithmetic</category>
+        <parameter varname='a' type='__m128i'/>
+        <parameter varname='b' type='__m128i'/>
+        <description>Negate packed 8-bit integers in "a" when the corresponding signed 8-bit integer in "b" is negative, and store the results in "dst". Element in "dst" are zeroed out when the corresponding element in "b" is zero.</description>
+        <operation>
+FOR j := 0 to 15
+        i := j*8
+        IF b[i+7:i] &lt; 0
+                dst[i+7:i] := -(a[i+7:i])
+        ELSE IF b[i+7:i] == 0
+                dst[i+7:i] := 0
+        ELSE
+                dst[i+7:i] := a[i+7:i]
+        FI
 ENDFOR
-dst[MAX:512] := 0
-	</operation>
-	<instruction name="vpshufb"/>
-	<header>immintrin.h</header>
+        </operation>
+        <instruction name='psignb' form='xmm, xmm'/>
+        <header>tmmintrin.h</header>
 </intrinsic>
   '''
 

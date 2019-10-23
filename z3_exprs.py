@@ -40,9 +40,9 @@ def get_canonicalized_params(expr):
     params.append(get_bitwidth_id(1))
   return params
 
-def serialize_expr(e):
+def serialize_expr(*exprs):
   '''
-  <z3 expr> -> <edges>, <ops>, <params>
+  <z3 expr> -> <edges>, <ops>, <params>, <node id of exprs>
   '''
   # <z3 expr> -> <id> 
   exprs2ids = {}
@@ -73,6 +73,6 @@ def serialize_expr(e):
       edges.append(edge)
     return id
 
-  populate_graph(e)
+  expr_ids = [populate_graph(e) for e in exprs]
   assert len(ops) == len(params[0]) == len(exprs2ids)
-  return edges, ops, params
+  return edges, ops, params, expr_ids

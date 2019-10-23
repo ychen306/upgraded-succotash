@@ -49,6 +49,18 @@ z3op_names = {
     ## z3.Z3_OP_EXTRACT: lambda args, expr: self.mgr.BVExtract(args[0],
     }
 
+def get_vars(f):
+    r = set()
+    def collect(f):
+      if z3.is_const(f):
+          if f.decl().kind() == z3.Z3_OP_UNINTERPRETED and not askey(f) in r:
+              r.add(askey(f))
+      else:
+          for c in f.children():
+              collect(c)
+    collect(f)
+    return r
+
 def assoc_op(op):
   return lambda *xs: functools.reduce(op, xs)
 
@@ -69,3 +81,14 @@ def askey(n):
 def get_z3_app(e):
   decl = z3.Z3_get_app_decl(z3.main_ctx().ref(), e.ast)
   return z3.Z3_get_decl_kind(z3.main_ctx().ref(), decl)
+
+def eval_z3_expr(e, args):
+  return z3.simplify(z3.substitute(e, *args))
+
+s = z3.Solver()
+def equivalent(a, b, test_cases):
+  if a.sort() != b.sort():
+    return False
+
+  return all(z3.is_true(eval_z3_expr(a==b, test_case))
+      for test_case in test_cases)
