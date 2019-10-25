@@ -13,6 +13,7 @@ semas = {}
 # get semantics of intrinsics
 with open('intrinsics.sema') as sema_f:
   while True:
+    break
     intrin_name = next(sema_f, None)
     if intrin_name is None:
       break

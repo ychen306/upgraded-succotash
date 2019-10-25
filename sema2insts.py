@@ -61,14 +61,26 @@ class SemaEmb(nn.Module):
         nn.Linear(emb_size * num_layers, emb_size),
         nn.LeakyReLU(),
         nn.Linear(emb_size, emb_size))
+    self.mlp_inv = nn.Sequential(
+        nn.Linear(emb_size * num_layers, emb_size),
+        nn.LeakyReLU(),
+        nn.Linear(emb_size, emb_size))
+    self.combine = nn.Linear(emb_size * 2, emb_size)
 
-  def forward(self, g, ops, params):
+  def forward(self, g, g_inv, ops, params):
     states = self.op_emb(ops, params)
+    states_inv = self.op_emb(ops, params)
     conv_outs = []
+    conv_outs_inv = []
     for conv in self.conv_layers:
       states = conv(g, states)
       conv_outs.append(states.sum(dim=0))
-    return self.mlp(torch.cat(conv_outs)), states
+    for conv in self.conv_layers:
+      states_inv = conv(g_inv, states_inv)
+      conv_outs_inv.append(states.sum(dim=0))
+    g_emb = self.mlp(torch.cat(conv_outs))
+    g_inv_emb = self.mlp_inv(torch.cat(conv_outs_inv))
+    return self.combine(torch.cat([g_emb, g_inv_emb])), self.combine(torch.cat([states, states_inv], dim=1))
 
 class Sema2Insts(nn.Module):
   def __init__(self, num_insts, emb_size=128, num_layers=3):
@@ -93,7 +105,12 @@ def expr2graph(serialized_expr):
   g = DGLGraph()
   g.add_nodes(len(ops))
   g.add_edges(srcs, dsts)
-  return g, torch.LongTensor(ops), [torch.LongTensor(p) for p in params], torch.LongTensor(expr_ids)
+
+  g_inv = DGLGraph()
+  g_inv.add_nodes(len(ops))
+  g_inv.add_edges(dsts, srcs)
+
+  return g, g_inv, torch.LongTensor(ops), [torch.LongTensor(p) for p in params], torch.LongTensor(expr_ids)
 
 def mean(xs):
   return sum(xs) / len(xs)
@@ -170,7 +187,7 @@ def load_data(expr_generator, n):
   print('generating expressions')
   for _ in tqdm(range(n)):
     e, insts = expr_generator()
-    g, ops, params, _ = expr2graph(e)
+    g, g_inv, ops, params, _ = expr2graph(e)
     inst_ids = unpack([insts2ids[i] for i in insts], num_insts)
     weights = torch.tensor([num_insts/len(insts) if x==1 else 1 for x in inst_ids])
     weights.div_(weights.sum())
@@ -196,7 +213,7 @@ def get_precision_and_recall(predicted, actual):
   return recall, precision
 
 def sema2insts(model, e, accept=lambda p: p > 0.5):
-  g, ops, params = expr2graph(serialize_expr(e))
+  g, g_inv, ops, params = expr2graph(serialize_expr(e))
   pred = model(g, ops, params)
   return [(ids2insts[i], float(p)) for i, p in enumerate(pred.reshape(-1)) if accept(p)]
 
