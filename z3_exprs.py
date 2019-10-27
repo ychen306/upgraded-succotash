@@ -18,26 +18,23 @@ def get_op_id(op):
 
 max_num_params = 3
 
-bitwidths = [1,2,4,8,16,32,64,128,256,512]
-# plus one for ``others''
-num_bitwidths = len(bitwidths) + 1
+max_bitwidth = 512 + 2
 
-bws2ids = { bw : i for i, bw in enumerate(bitwidths) }
-def get_bitwidth_id(bw):
-  id = bws2ids.get(bw, None)
-  if id is not None:
-    return id
-  return num_bitwidths-1
+def get_bw(bw):
+  bw = int(bw)
+  if bw >= max_bitwidth:
+    return max_bitwidth - 1
+  return bw
 
 def get_canonicalized_params(expr):
-  params = [get_bitwidth_id(bw) for bw in expr.params()]
+  params = [get_bw(bw) for bw in expr.params()]
   while len(params) < max_num_params-1:
-    params.append(num_bitwidths-1)
+    params.append(0)
   if z3.is_bv(expr):
-    params.append(get_bitwidth_id(expr.size()))
+    params.append(get_bw(expr.size()))
   else:
     assert z3.is_bool(expr)
-    params.append(get_bitwidth_id(1))
+    params.append(get_bw(1))
   return params
 
 def serialize_expr(*exprs):

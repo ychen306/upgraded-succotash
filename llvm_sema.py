@@ -90,6 +90,13 @@ def to_bitvec(f):
 def get_llvm_op_name(op, out_bw):
   return 'llvm_%s_%d' % (op, out_bw)
 
+
+def shift_op(op):
+  def impl(a, b):
+    mask = z3.BitVecVal((1 << a.size()) - 1, b.size())
+    return op(a, b & mask)
+  return impl
+
 # Not included:
 #    SExt,
 #    ZExt,
@@ -107,9 +114,9 @@ binary_ops = {
     'SRem': lambda a,b: a % b,
     'UDiv': z3.UDiv,
     'URem': z3.URem,
-    'Shl': operator.lshift,
-    'LShr': z3.LShR,
-    'AShr': operator.rshift,
+    'Shl': shift_op(operator.lshift),
+    'LShr': shift_op(z3.LShR),
+    'AShr': shift_op(operator.rshift),
     'And': lambda a, b: a & b,
     'Or': operator.or_,
     'Xor': operator.xor,
@@ -138,6 +145,51 @@ binary_ops = {
     'Slt': to_bitvec(operator.lt),
     'Sle': to_bitvec(operator.le),
     }
+
+binary_syntaxes = {
+    'Add': '+',
+    'Sub': '-',
+    'Mul': '*',
+    'SDiv': '/',
+    'SRem': '%',
+    'UDiv': '/',
+    'URem': '%',
+    'Shl': '<<',
+    'LShr': '>>',
+    'AShr': '>>',
+    'And': '&',
+    'Or': '|',
+    'Xor': '^',
+
+    'FAdd': '+',
+    'FSub': '-',
+    'FMul': '*',
+    'FDiv': '/',
+    'FRem': '%',
+
+    'Foeq': '==',
+    'Fone': '!=',
+    'Fogt': '>',
+    'Foge': '>=',
+    'Folt': '<',
+    'Fole': '<=',
+
+    'Eq': '==',
+    'Ne': '!=',
+    'Ugt': '>',
+    'Uge': '>=',
+    'Ult': '<',
+    'Ule': '<=',
+    'Sgt': '>',
+    'Sge': '>=',
+    'Slt': '<',
+    'Sle': '<=',
+    }
+
+signed_binary_ops = {
+    'SDiv', 'SRem', 'AShr', 'Sgt', 'Sge', 'Slt', 'Sle',
+    }
+
 
 float_ops = {
     'FAdd',

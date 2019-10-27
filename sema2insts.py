@@ -15,7 +15,7 @@ from tqdm import tqdm
 import z3
 from z3_utils import get_z3_app
 
-from z3_exprs import num_ops, num_bitwidths, max_num_params, serialize_expr
+from z3_exprs import num_ops, max_num_params, serialize_expr, max_bitwidth
 
 class OpEmb(nn.Module):
   '''
@@ -27,7 +27,7 @@ class OpEmb(nn.Module):
     super().__init__()
     self.emb_size = emb_size
     self.op_embs = nn.Embedding(num_ops, emb_size)
-    self.param_embs = nn.Embedding(num_bitwidths, emb_size)
+    self.param_embs = nn.Embedding(max_bitwidth, emb_size)
     self.mlp = nn.Sequential(
         nn.Linear(emb_size * (1 + max_num_params), emb_size),
         nn.LeakyReLU(),
