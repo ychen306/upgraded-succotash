@@ -90,6 +90,14 @@ def to_bitvec(f):
 def get_llvm_op_name(op, out_bw):
   return 'llvm_%s_%d' % (op, out_bw)
 
+def get_trunc_name(bw_in, bw_out):
+  return get_llvm_op_name('Trunc%d' % bw_in, bw_out)
+
+def get_sext_name(bw_in, bw_out):
+  return get_llvm_op_name('SExt%d' % bw_in, bw_out)
+
+def get_zext_name(bw_in, bw_out):
+  return get_llvm_op_name('ZExt%d' % bw_in, bw_out)
 
 def shift_op(op):
   def impl(a, b):
@@ -188,6 +196,30 @@ binary_syntaxes = {
 
 signed_binary_ops = {
     'SDiv', 'SRem', 'AShr', 'Sgt', 'Sge', 'Slt', 'Sle',
+    }
+
+divisions = {
+    'SDiv', 'UDiv', 'URem', 'SRem',
+    }
+
+comparisons = {
+    'Foeq',
+    'Fone',
+    'Fogt',
+    'Foge',
+    'Folt',
+    'Fole',
+
+    'Eq',
+    'Ne',
+    'Ugt',
+    'Uge',
+    'Ult',
+    'Ule',
+    'Sgt',
+    'Sge',
+    'Slt',
+    'Sle',
     }
 
 
