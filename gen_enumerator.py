@@ -29,7 +29,7 @@ def get_usable_inputs(input_size, sketch_graph, sketch_nodes, outputs, v):
         input_idxs.append((w, i))
   return input_idxs
 
-def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_tests=1000):
+def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_tests=128):
   '''
   a sketch is a directed graph, where
     * each node is a set of instructions of the same signatures
@@ -106,8 +106,8 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
       for i, inst in enumerate(sketch_nodes[v].insts):
         case = ('case %d' % i) if i > 0 else 'default'
         out.write('%s: {\n' % case)
-        out.write('div_by_zero = run_{inst}_{imm8}(num_tests, {input_args}, {output_args});\n'.format(
-          inst=inst.name, input_args=', '.join(inputs), output_args=', '.join(v_outputs), imm8=str(inst.imm8) if inst.imm8 else '0'))
+        out.write('div_by_zero = run_{inst}_{imm8}(num_tests, {args});\n'.format(
+          inst=inst.name, args=', '.join(inputs + v_outputs), imm8=str(inst.imm8) if inst.imm8 else '0'))
         out.write('} break;\n') # end case
       out.write('}\n') # end switch
 
@@ -139,6 +139,9 @@ def emit_includes(out):
   out.write('#include <string.h>\n') # memcmp
   out.write('#include <immintrin.h>\n') # duh
   out.write('#include <stdio.h>\n') # debug
+  out.write('#include <stdint.h>\n')
+  out.write('#define __int64_t __int64\n')
+  out.write('#define __int64 long long\n')
 
 # FIXME: this is broken (asymptotically)!!!! We shouldn't nest two `parallel' nodes together
 def emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out):
@@ -282,7 +285,7 @@ def emit_init(liveins, out):
   out.write('}\n')
 
 
-def emit_inst_runners(sketch_nodes, out):
+def emit_inst_runners(sketch_nodes, out, h_out):
   emitted = set()
   for n in sketch_nodes.values():
     if n.insts is None:
@@ -297,11 +300,12 @@ def emit_inst_runners(sketch_nodes, out):
       if inst in emitted:
         continue
       emitted.add(inst)
-      out.write('int run_{inst}_{imm8}(int num_tests, {input_params}, {output_params}) {{\n'.format(
+      decl = 'int run_{inst}_{imm8}(int num_tests, {params})\n'.format(
         inst=inst.name, imm8=str(inst.imm8) if inst.imm8 else '0', 
-        input_params=', '.join('char *__restrict__ '+x for x in inputs),
-        output_params=', '.join('char *__restrict__ '+y for y in outputs)
-        ))
+        params=', '.join('char *__restrict__ '+x for x in (inputs+outputs)),
+        )
+      h_out.write(decl + ';\n')
+      out.write(decl + '{\n')
       out.write('for (int i = 0; i < num_tests; i++) {')
       out.write(expr_generators[inst.name]('i', inputs, outputs, inst.imm8))
       out.write('}\n') # end for
@@ -312,18 +316,48 @@ def emit_inst_runners(sketch_nodes, out):
 
 def emit_everything(target_size, sketch_graph, sketch_nodes, out):
   emit_includes(out)
+  out.write('#include "insts.h"\n')
   insts = set()
-  emit_inst_runners(sketch_nodes, out)
   inst_evaluations, liveins, configs = emit_inst_evaluations(target_size, g, nodes, out)
   emit_init(liveins, out)
   emit_solution_handler(configs, out)
   emit_enumerator(target_size, nodes, inst_evaluations, configs, out)
 
+def emit_insts_lib(out, h_out):
+  for inst, (input_types, _) in sigs.items():
+    has_imm8 = any(ty.is_constant for ty in input_types)
+    if not has_imm8:
+      insts.append(ConcreteInst(inst, imm8=None))
+    else:
+      insts.append(ConcreteInst(inst, imm8='12'))
+  _, nodes = make_fully_connected_graph(
+      liveins=[('x', 64), ('y', 64)],
+      insts=insts,
+      num_levels=4)
+
+  emit_includes(out)
+  emit_inst_runners(nodes, out, h_out)
+
 if __name__ == '__main__':
   import sys
-  llvm_insts = [ConcreteInst(inst, imm8=None) for inst in sigs.keys() if inst.startswith('llvm') and inst.endswith('64') and sigs[inst][1][0] == 64]#  ) and sigs[inst][1][0] == 64]#or inst.endswith('1'))]
+  insts = []
+
+  for inst, (input_types, _) in sigs.items():
+    if 'llvm' not in inst or '64' not in inst:
+      continue
+    if not sigs[inst][1][0] == 64:
+      continue
+    has_imm8 = any(ty.is_constant for ty in input_types)
+    if not has_imm8:
+      insts.append(ConcreteInst(inst, imm8=None))
+    else:
+      insts.append(ConcreteInst(inst, imm8='12'))
   g, nodes = make_fully_connected_graph(
       liveins=[('x', 64), ('y', 64)],
-      insts=llvm_insts,
+      insts=insts,
       num_levels=4)
   emit_everything(64, g, nodes, sys.stdout)
+  exit(1)
+
+  with open('insts.c', 'w') as out, open('insts.h', 'w') as h_out:
+    emit_insts_lib(out, h_out)

@@ -36,10 +36,10 @@ def get_binary_expr_generator(op_syntax, in_bitwidth, out_bitwidth, signed, is_d
 
     guard_div_by_zero = ''
     if is_division and signed:
-      guard_div_by_zero = 'if ({b} == 0 || ({a} == {int_min} && {b} == -1)) div_by_zero = 1; else'.format(
+      guard_div_by_zero = 'if ({b} == 0 || ({a} == {int_min} && {b} == -1)) return 1; else'.format(
           a=a, b=b, int_min=get_int_min(in_bitwidth))
     elif is_division and not signed:
-      guard_div_by_zero = 'if ({b} == 0) div_by_zero = 1; else'.format(b=b)
+      guard_div_by_zero = 'if ({b} == 0) return 1; else'.format(b=b)
     return '{guard_div_by_zero} {y} = {a} {op} {b};'.format(
         guard_div_by_zero=guard_div_by_zero,
         op=op_syntax,
@@ -143,7 +143,7 @@ def get_in_param_id(idx):
   return ParamId(is_input=True, idx=idx, is_constant=False)
 
 def get_out_param_id(idx):
-  return ParamId(is_input=False, idx=idx, is_constant=True)
+  return ParamId(is_input=False, idx=idx, is_constant=False)
 
 def get_intrinsic_generator(spec):
   # mapping each input or output to its position in the intrinsic params
@@ -187,7 +187,7 @@ def get_intrinsic_generator(spec):
         param_type = in_param_types[param_id.idx]
         params.append(index_into(args[param_id.idx], i, param_type))
       else:
-        param_type = out_param_types[param_idx.idx - (1 if has_explicit_retval else 0)]
+        param_type = out_param_types[param_id.idx - (1 if has_explicit_retval else 0)]
         params.append(address_of(index_into(args[param_id.idx], i, param_type)))
 
     call = '%s(%s);' % (spec.intrin, ', '.join(params))

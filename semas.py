@@ -10,10 +10,11 @@ import z3
 # mapping <intrinsic name> -> [<in vars>], [<out formulas>]
 semas = {}
 
+ignore_intrinsics = False
+
 # get semantics of intrinsics
 with open('intrinsics.sema') as sema_f:
-  while True:
-    break
+  while not ignore_intrinsics:
     intrin_name = next(sema_f, None)
     if intrin_name is None:
       break
