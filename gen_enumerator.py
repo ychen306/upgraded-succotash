@@ -87,8 +87,7 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
         out.write('switch (%s) {\n' % arg_config)
         for j, (w, out_idx) in enumerate(usable_outputs):
           var_to_use, _ = outputs[w][out_idx]
-          case = ('case %s' % j) if j > 0 else 'default'
-          out.write('%s: x%d = %s; break;\n' % (case, i, var_to_use))
+          out.write('case %d: x%d = %s; break;\n' % (j, i, var_to_use))
         out.write('}\n') # end switch
 
         arg_configs.append(ArgConfig(arg_config, usable_outputs))
@@ -104,8 +103,7 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
       out.write('switch(op_%d) {\n' % v)
       inputs = ['x%d'%i for i in range(num_inputs)]
       for i, inst in enumerate(sketch_nodes[v].insts):
-        case = ('case %d' % i) if i > 0 else 'default'
-        out.write('%s: {\n' % case)
+        out.write('case %d: {\n' % i)
         out.write('div_by_zero = run_{inst}_{imm8}(num_tests, {args});\n'.format(
           inst=inst.name, args=', '.join(inputs + v_outputs), imm8=str(inst.imm8) if inst.imm8 else '0'))
         out.write('} break;\n') # end case
@@ -133,6 +131,12 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
   target_bytes = max(target_size, 8) // 8
   out.write('static char target[%d];\n' % (target_bytes * max_tests))
 
+  # declare the configs as global variable
+  for inst_config in configs:
+    out.write('static int %s = -1;\n' % inst_config.name)
+    for arg in inst_config.args:
+      out.write('static int %s = -1;\n' % arg.name)
+
   return inst_evaluations, liveins, configs
 
 def emit_includes(out):
@@ -147,14 +151,6 @@ def emit_includes(out):
 def emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out):
   out.write('void enumerate(int num_tests) {\n')
   out.write('unsigned long long num_evaluated = 0;\n')
-
-  config_list = []
-  for inst_config in configs:
-    out.write('int %s = -1;\n' % inst_config.name)
-    config_list.append(inst_config.name)
-    for arg in inst_config.args:
-      out.write('int %s = -1;\n' % arg.name)
-      config_list.append(arg.name)
 
   num_right_braces = 0
   # do a DFS over the configs
@@ -176,8 +172,8 @@ def emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out):
     for i, y_size in enumerate(sketch_nodes[inst_config.node_id].output_sizes):
       if y_size == target_size:
         output_name = 'y_%d_%d' % (inst_config.node_id, i)
-        out.write('if (memcmp(target, {y}, {y_size}*num_tests) == 0) handle_solution(num_evaluated, {v}, {args});\n'.format(
-          y=output_name, y_size=bits2bytes(y_size), args=', '.join(config_list), v=inst_config.node_id
+        out.write('if (memcmp(target, {y}, {y_size}*num_tests) == 0) handle_solution(num_evaluated, {v});\n'.format(
+          y=output_name, y_size=bits2bytes(y_size), v=inst_config.node_id
           ))
 
   out.write('num_evaluated += 1;\n')
@@ -192,13 +188,8 @@ def emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out):
 
 # FIXME: also make it real
 def emit_solution_handler(configs, out):
-  config_list = ['unsigned long long num_evaluated', 'int _']
-  for inst_config in configs:
-    config_list.append('int '+inst_config.name)
-    for arg in inst_config.args:
-      config_list.append('int '+arg.name)
-  out.write('void handle_solution(%s) {\n' % ', '.join(config_list))
-  out.write('printf("found a solution at iter %llu!\\n", num_evaluated);\n')
+  out.write('void handle_solution(int num_evaluated, int _) {\n')
+  out.write('printf("found a solution at iter %lu!\\n", num_evaluated);\n')
   for inst_config in configs:
 
     out.write('printf("%d = ");\n' % inst_config.node_id)
