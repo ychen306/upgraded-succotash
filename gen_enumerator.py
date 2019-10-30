@@ -5,6 +5,8 @@ import io
 from expr_sampler import sigs
 import sys
 
+import z3
+
 def debug(*args):
   print(*args, file=sys.stderr)
 
@@ -168,7 +170,7 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
       out.write('static int %s = -1;\n' % inst_config.name)
       for arg in inst_config.args:
         out.write('static int %s = -1;\n' % arg.name)
-  out.write('unsigned long long num_evaluated = 0;\n')
+  out.write('static unsigned long long num_evaluated = 0;\n')
 
   return inst_evaluations, liveins, configs
 
@@ -309,21 +311,57 @@ def make_fully_connected_graph(liveins, insts, num_levels):
 
   return graph, nodes
 
-# FIXME: don't hardcode this
-# FIXME: THIS IS BROKEN---we should have found a solution!
-def emit_init(liveins, out):
+def emit_assignment(var, bitwidth, val, i, out):
+  mask = 255
+  num_bytes = max(bitwidth, 8) // 8
+  for j in range(num_bytes):
+    byte = val & mask
+    out.write('((uint8_t *){var})[{i} * {num_bytes} + {j}] = {byte};\n'.format(
+      var=var, i=i, j=j, num_bytes=num_bytes, byte=byte
+      ))
+    val >>= 8
+
+def emit_init(target, liveins, out):
   import random
-  (x, _), (y, _) = liveins
+  vars = [z3.BitVec(var, size) for var, size in liveins]
+
   out.write('void init() {\n')
   for i in range(32):
-    a = random.randint(-(1<<16), 1<<16)
-    b = random.randint(-(1<<16), 1<<16)
-    soln = max(a,b)
-    out.write('((int64_t *)x)[%d] = %d;\n' % (i, a))
-    out.write('((int64_t *)y)[%d] = %d;\n' % (i, b))
-    out.write('((int64_t *)target)[%d] = %d;\n' % (i, soln))
+    #a = random.randint(-(1<<16), 1<<16)
+    #b = random.randint(-(1<<16), 1<<16)
+    #soln = max(a,b)
+    #out.write('((int64_t *)x)[%d] = %d;\n' % (i, a))
+    #out.write('((int64_t *)y)[%d] = %d;\n' % (i, b))
+    #out.write('((int64_t *)target)[%d] = %d;\n' % (i, soln))
+
+    # generate random input
+    inputs = [random.randint(0, (1<<size)-1)
+      for _, size in liveins]
+
+    z3_inputs = [z3.BitVecVal(val, size) for val, (_, size) in zip(inputs, liveins)]
+    z3_soln = z3.simplify(z3.substitute(target, *zip(vars, z3_inputs)))
+    assert z3.is_const(z3_soln)
+
+    soln = z3_soln.as_long()
+    emit_assignment('target', target.size(), soln, i, out)
+    for input, (var, size) in zip(inputs, liveins):
+      emit_assignment(var, size, input, i, out)
+    
   out.write('}\n')
 
+
+def p24(x, *_):
+  o1 = x-1 
+  o2 = o1 >> 1
+  o3 = o1 | o2
+  o4 = o3 >> 2
+  o5 = o3 | o4
+  o6 = o5 >> 4
+  o7 = o5 | o6
+  o8 = o7 >> 8
+  o9 = o7 | o8
+  o10 = o9 >> 16
+  return o10 + 1 
 
 def emit_inst_runners(sketch_nodes, out, h_out):
   emitted = set()
@@ -354,12 +392,17 @@ def emit_inst_runners(sketch_nodes, out, h_out):
 
       out.write('}\n') # end function
 
-def emit_everything(target_size, sketch_graph, sketch_nodes, out):
+def emit_everything(target, sketch_graph, sketch_nodes, out):
+  '''
+  target is an smt formula
+  '''
+  target_size = target.size()
+
   emit_includes(out)
   out.write('#include "insts.h"\n')
   insts = set()
   inst_evaluations, liveins, configs = emit_inst_evaluations(target_size, g, nodes, out)
-  emit_init(liveins, out)
+  emit_init(target, liveins, out)
   emit_solution_handler(configs, out)
   emit_enumerator(target_size, nodes, inst_evaluations, configs, out)
 
@@ -378,25 +421,37 @@ def emit_insts_lib(out, h_out):
   emit_includes(out)
   emit_inst_runners(nodes, out, h_out)
 
+
 if __name__ == '__main__':
   import sys
   insts = []
 
   for inst, (input_types, _) in sigs.items():
+    #if not sigs[inst][1][0] == 128 and ('llvm' not in inst or '64' not in inst):
+    #  continue
+
     if 'llvm' not in inst or '64' not in inst:
       continue
     #if not sigs[inst][1][0] == 64:
     #  continue
+
     has_imm8 = any(ty.is_constant for ty in input_types)
     if not has_imm8:
       insts.append(ConcreteInst(inst, imm8=None))
     else:
       insts.append(ConcreteInst(inst, imm8='12'))
+  insts[:128]
+  liveins = [('x', 64), ('y', 64)]
+  x, y = z3.BitVecs('x y', 64)
+  target = z3.If(x >= y, x, y)
+
+  target = z3.If(x >= y, x, y) * z3.If(x >= y, x, y)
+
   g, nodes = make_fully_connected_graph(
-      liveins=[('x', 64), ('y', 64)],
+      liveins=liveins,
       insts=insts,
       num_levels=4)
-  emit_everything(64, g, nodes, sys.stdout)
+  emit_everything(target, g, nodes, sys.stdout)
   exit(0)
 
   with open('insts.c', 'w') as out, open('insts.h', 'w') as h_out:
