@@ -158,7 +158,7 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
   for bufs in outputs.values():
     for _, var, size in bufs:
       bytes = max(size, 8) // 8
-      out.write('static char %s[%d];\n' % (var, bytes * max_tests))
+      out.write('static char %s[%d] __attribute__ ((aligned (64)));\n' % (var, bytes * max_tests))
   # also allocate the variable storing the targets
   target_bytes = max(target_size, 8) // 8
   out.write('static char target[%d];\n' % (target_bytes * max_tests))
@@ -366,31 +366,37 @@ def p24(x, *_):
 def emit_inst_runners(sketch_nodes, out, h_out):
   emitted = set()
   for n in sketch_nodes.values():
-    if n.insts is None:
+    if n.inst_groups is None:
       continue
 
-    num_inputs = len(n.input_sizes)
-    num_outputs = len(n.output_sizes)
-    inputs = ['x%d' % i for i in range(num_inputs)]
-    outputs = ['y%d' % i for i in range(num_outputs)]
+    for inst_group in n.inst_groups:
+      num_inputs = len(inst_group.input_sizes)
+      num_outputs = len(inst_group.output_sizes)
+      inputs = ['x%d' % i for i in range(num_inputs)]
+      outputs = ['y%d' % i for i in range(num_outputs)]
 
-    for inst in n.insts:
-      if inst in emitted:
-        continue
-      emitted.add(inst)
-      decl = 'int run_{inst}_{imm8}(int num_tests, {params})\n'.format(
-        inst=inst.name, imm8=str(inst.imm8) if inst.imm8 else '0', 
-        params=', '.join('char *__restrict__ '+x for x in (inputs+outputs)),
-        )
-      h_out.write(decl + ';\n')
-      out.write(decl + '{\n')
-      out.write('for (int i = 0; i < num_tests; i++) {')
-      out.write(expr_generators[inst.name]('i', inputs, outputs, inst.imm8))
-      out.write('}\n') # end for
+      for inst in inst_group.insts:
+        if inst in emitted:
+          continue
+        emitted.add(inst)
+        decl = 'int run_{inst}_{imm8}(int num_tests, {params})\n'.format(
+          inst=inst.name, imm8=str(inst.imm8) if inst.imm8 else '0', 
+          params=', '.join('char *__restrict__ '+x for x in (inputs+outputs)),
+          )
+        h_out.write(decl + ';\n')
+        out.write(decl + '{\n')
 
-      out.write('return 0;\n') # report we didn't encounter div-by-zero
+        # tell the compiler that the arguments are aligned
+        for x in (inputs + outputs):
+          out.write('{x} = __builtin_assume_aligned({x}, 64);\n'.format(x=x))
 
-      out.write('}\n') # end function
+        out.write('for (int i = 0; i < num_tests; i++) {')
+        out.write(expr_generators[inst.name]('i', inputs, outputs, inst.imm8))
+        out.write('}\n') # end for
+
+        out.write('return 0;\n') # report we didn't encounter div-by-zero
+
+        out.write('}\n') # end function
 
 def emit_everything(target, sketch_graph, sketch_nodes, out):
   '''
@@ -412,7 +418,8 @@ def emit_insts_lib(out, h_out):
     if not has_imm8:
       insts.append(ConcreteInst(inst, imm8=None))
     else:
-      insts.append(ConcreteInst(inst, imm8='12'))
+      for imm8 in range(255):
+        insts.append(ConcreteInst(inst, imm8=str(imm8)))
   _, nodes = make_fully_connected_graph(
       liveins=[('x', 64), ('y', 64)],
       insts=insts,
@@ -421,17 +428,22 @@ def emit_insts_lib(out, h_out):
   emit_includes(out)
   emit_inst_runners(nodes, out, h_out)
 
-
 if __name__ == '__main__':
   import sys
   insts = []
 
-  for inst, (input_types, _) in sigs.items():
-    #if not sigs[inst][1][0] == 128 and ('llvm' not in inst or '64' not in inst):
-    #  continue
+  #with open('insts.c', 'w') as out, open('insts.h', 'w') as h_out:
+  #  emit_insts_lib(out, h_out)
+  #exit(1)
 
-    if 'llvm' not in inst or '64' not in inst:
-      continue
+  for inst, (input_types, _) in sigs.items():
+    if ((sigs[inst][1][0] not in (256,128) or ('epi64' not in inst)) and
+        ('llvm' not in inst or '64' not in inst)):
+      if 'broadcast' not in inst:
+        continue
+
+    #if 'llvm' not in inst or '64' not in inst:
+    #  continue
     #if not sigs[inst][1][0] == 64:
     #  continue
 
@@ -439,20 +451,47 @@ if __name__ == '__main__':
     if not has_imm8:
       insts.append(ConcreteInst(inst, imm8=None))
     else:
-      insts.append(ConcreteInst(inst, imm8='12'))
-  insts[:128]
+      insts.append(ConcreteInst(inst, imm8=str(0)))
+      continue
+      for imm8 in range(255):
+        insts.append(ConcreteInst(inst, imm8=str(imm8)))
+
   liveins = [('x', 64), ('y', 64)]
   x, y = z3.BitVecs('x y', 64)
   target = z3.If(x >= y, x, y)
 
   target = z3.If(x >= y, x, y) * z3.If(x >= y, x, y)
+  zero = z3.BitVecVal(0,64)
+  target = z3.Concat([x,zero,y,zero])
+
+  liveins = [('x', 256), ('y', 256)]
+
+  shl = lambda a, b : (a << (b & 0b111111))
+  shl = lambda a, b : (a & b ^ a)
+  maxbv = lambda a, b : z3.If(a >= b, a, b)
+  minbv  = lambda a, b : z3.If(a <= b, a, b)
+  x = z3.BitVec('x', 256)
+  y = z3.BitVec('y', 256)
+
+  x1 = z3.Extract(255, 192, x)
+  x2 = z3.Extract(191, 128, x) 
+  x3 = z3.Extract(127, 64, x)
+  x4 = z3.Extract(63, 0, x)
+
+  y1 = z3.Extract(255, 192, y)
+  y2 = z3.Extract(191, 128, y) 
+  y3 = z3.Extract(127, 64, y)
+  y4 = z3.Extract(63, 0, y)
+
+  assert y4.size() == 64
+  assert x4.size() == 64
+
+  target = z3.Concat(maxbv(x1,y1), maxbv(x2,y2), minbv(x3,y3), minbv(x4,y4))
+  target = z3.Concat(x1,y2,x3,y4)
+  assert target.size() == 256
 
   g, nodes = make_fully_connected_graph(
       liveins=liveins,
       insts=insts,
       num_levels=4)
   emit_everything(target, g, nodes, sys.stdout)
-  exit(0)
-
-  with open('insts.c', 'w') as out, open('insts.h', 'w') as h_out:
-    emit_insts_lib(out, h_out)
