@@ -10,17 +10,20 @@ import z3
 def debug(*args):
   print(*args, file=sys.stderr)
 
+constants = [0,1,2,4,8,16,32,64,128]
+constant_pool = list(zip(constants, itertools.repeat(8)))
+
 InstGroup = namedtuple('InstGroup', ['insts', 'input_sizes', 'output_sizes'])
-SketchNode = namedtuple('SketchNode', ['inst_groups', 'var', 'var_size'])
+SketchNode = namedtuple('SketchNode', ['inst_groups', 'var', 'var_size', 'const_val'])
 ConcreteInst = namedtuple('ConcreteInst', ['name', 'imm8'])
 ArgConfig = namedtuple('ArgConfig', ['name', 'options'])
 InstConfig = namedtuple('InstConfig', ['name', 'node_id', 'group_id', 'options', 'args'])
 
 def create_inst_node(inst_groups):
-  return SketchNode(inst_groups, None, None)
+  return SketchNode(inst_groups, None, None, None)
 
-def create_var_node(var, size):
-  return SketchNode(None, var, size)
+def create_var_node(var, size, const_val=None):
+  return SketchNode(None, var, size, const_val)
 
 def bits2bytes(bits):
   return max(bits, 8) // 8
@@ -69,9 +72,10 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
     if is_leaf:
       var = sketch_nodes[v].var
       size = sketch_nodes[v].var_size
+      const_val = sketch_nodes[v].const_val
       assert var is not None
       outputs[v] = [(0, var, size)]
-      liveins.append((var, size))
+      liveins.append((var, size, const_val))
       return
 
     for w in sketch_graph[v]:
@@ -266,7 +270,7 @@ def emit_solution_handler(configs, out):
 
   out.write('}\n') # end func
 
-def make_fully_connected_graph(liveins, insts, num_levels):
+def make_fully_connected_graph(liveins, insts, num_levels, constants=constant_pool):
   # categorize the instructions by their signature first
   sig2insts = defaultdict(list)
 
@@ -288,6 +292,14 @@ def make_fully_connected_graph(liveins, insts, num_levels):
     node_id = node_counter
     node_counter += 1
     nodes[node_id] = create_var_node(x, size)
+
+  # create nodes for the constant pool
+  for val, size in constants:
+    available_bitwidths.add(size)
+    node_id = node_counter
+    node_counter += 1
+    const_name = 'const_%d_%d' % (val, size)
+    nodes[node_id] = create_var_node(const_name, size, val)
 
   for _ in range(num_levels):
     # nodes for current level
@@ -323,7 +335,7 @@ def emit_assignment(var, bitwidth, val, i, out):
 
 def emit_init(target, liveins, out):
   import random
-  vars = [z3.BitVec(var, size) for var, size in liveins]
+  vars = [z3.BitVec(var, size) for var, size, _ in liveins]
 
   out.write('void init() {\n')
   for i in range(32):
@@ -335,16 +347,18 @@ def emit_init(target, liveins, out):
     #out.write('((int64_t *)target)[%d] = %d;\n' % (i, soln))
 
     # generate random input
-    inputs = [random.randint(0, (1<<size)-1)
-      for _, size in liveins]
+    inputs = [
+      # but use the fixed input val if it's a constant
+      const_val if const_val is not None else random.randint(0, (1<<size)-1)
+      for _, size, const_val in liveins]
 
-    z3_inputs = [z3.BitVecVal(val, size) for val, (_, size) in zip(inputs, liveins)]
+    z3_inputs = [z3.BitVecVal(val, size) for val, (_, size, _) in zip(inputs, liveins)]
     z3_soln = z3.simplify(z3.substitute(target, *zip(vars, z3_inputs)))
     assert z3.is_const(z3_soln)
 
     soln = z3_soln.as_long()
     emit_assignment('target', target.size(), soln, i, out)
-    for input, (var, size) in zip(inputs, liveins):
+    for input, (var, size, _) in zip(inputs, liveins):
       emit_assignment(var, size, input, i, out)
     
   out.write('}\n')
@@ -422,6 +436,7 @@ def emit_insts_lib(out, h_out):
         insts.append(ConcreteInst(inst, imm8=str(imm8)))
   _, nodes = make_fully_connected_graph(
       liveins=[('x', 64), ('y', 64)],
+      constants=[],
       insts=insts,
       num_levels=4)
 
@@ -436,13 +451,14 @@ if __name__ == '__main__':
   #  emit_insts_lib(out, h_out)
 
   for inst, (input_types, _) in sigs.items():
-    if ((sigs[inst][1][0] not in (256,128) or ('epi64' not in inst)) and
-        ('llvm' not in inst or '64' not in inst)):
-      if 'broadcast' not in inst:
-        continue
+    #if ((sigs[inst][1][0] not in (256,128) or ('epi64' not in inst)) and
+    #    ('llvm' not in inst or '64' not in inst)):
+    #  if 'broadcast' not in inst:
+    #    continue
 
-    #if 'llvm' not in inst or '64' not in inst:
-    #  continue
+    if 'llvm' not in inst or '64' not in inst:
+      continue
+
     #if not sigs[inst][1][0] == 64:
     #  continue
 
@@ -457,40 +473,11 @@ if __name__ == '__main__':
 
   liveins = [('x', 64), ('y', 64)]
   x, y = z3.BitVecs('x y', 64)
-  target = z3.If(x >= y, x, y)
-
-  target = z3.If(x >= y, x, y) * z3.If(x >= y, x, y)
-  zero = z3.BitVecVal(0,64)
-  target = z3.Concat([x,zero,y,zero])
-
-  liveins = [('x', 256), ('y', 256)]
-
-  shl = lambda a, b : (a << (b & 0b111111))
-  shl = lambda a, b : (a & b ^ a)
-  maxbv = lambda a, b : z3.If(a >= b, a, b)
-  minbv  = lambda a, b : z3.If(a <= b, a, b)
-  x = z3.BitVec('x', 256)
-  y = z3.BitVec('y', 256)
-
-  x1 = z3.Extract(255, 192, x)
-  x2 = z3.Extract(191, 128, x) 
-  x3 = z3.Extract(127, 64, x)
-  x4 = z3.Extract(63, 0, x)
-
-  y1 = z3.Extract(255, 192, y)
-  y2 = z3.Extract(191, 128, y) 
-  y3 = z3.Extract(127, 64, y)
-  y4 = z3.Extract(63, 0, y)
-
-  assert y4.size() == 64
-  assert x4.size() == 64
-
-  target = z3.Concat(maxbv(x1,y1), maxbv(x2,y2), minbv(x3,y3), minbv(x4,y4))
-  target = z3.Concat(x1,y2,x3,y4)
-  assert target.size() == 256
+  target = x * 8 
 
   g, nodes = make_fully_connected_graph(
       liveins=liveins,
+      constants=[(8,8), (12, 8)],
       insts=insts,
       num_levels=4)
   emit_everything(target, g, nodes, sys.stdout)
