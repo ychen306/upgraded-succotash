@@ -91,10 +91,10 @@ class Sema2Insts(nn.Module):
         nn.LeakyReLU(),
         nn.Linear(emb_size, num_insts))
 
-  def forward(self, g, ops, params):
+  def forward(self, g, g_inv, ops, params):
     # drop the node embeddings
-    emb, _ = self.sema_emb(g, ops, params)
-    return torch.sigmoid(self.mlp(emb))
+    emb, _ = self.sema_emb(g, g_inv, ops, params)
+    return self.mlp(emb)
 
 def expr2graph(serialized_expr):
   '''

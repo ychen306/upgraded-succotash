@@ -125,6 +125,7 @@ categories = categorize_by_output(sigs)
 
 def sample_expr(rounds):
   bitwidths = [8, 16, 32, 64, 128, 256, 512]
+  bitwidths = [8, 16, 32, 64]
   num_inputs = int(random.gauss(4, 1)+1)
   inputs = []
   for i in range(num_inputs):
@@ -136,13 +137,16 @@ def sample_expr(rounds):
 
 def gen_expr(*args):
   while True:
-    e, insts, _ = sample_expr(2)
+    try:
+      e, insts, liveins = sample_expr(5)
+    except:
+      continue
     e = z3.simplify(e)
     if not (z3.is_bv_value(e) or
         z3.is_true(e) or
         z3.is_false(e) or
         get_z3_app(e) == z3.Z3_OP_UNINTERPRETED):
-      return serialize_expr(e), insts
+      return e, serialize_expr(e), insts, liveins
 
 if __name__ == '__main__':
   from multiprocessing.pool import Pool
@@ -152,11 +156,15 @@ if __name__ == '__main__':
 
   pool = Pool(1)#26 * 2 - 4)
 
-  num_exprs = 1000
+  num_exprs = 5000
   pbar = iter(tqdm(range(num_exprs)))
+
+  target, _, _, _ = gen_expr()
+  print(z3.simplify(target))
+  exit()
 
   with open('exprs.json', 'w') as outf:
     #for e, insts in pool.imap_unordered(gen_expr, range(num_exprs)):
-    for e, insts in map(gen_expr, range(num_exprs)):
+    for e, insts, _ in map(gen_expr, range(num_exprs)):
       outf.write(json.dumps((e, insts))+'\n')
       next(pbar)

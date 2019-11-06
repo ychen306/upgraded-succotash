@@ -10,9 +10,12 @@ import torch.nn.functional as F
 import torch.optim as optim
 import multiprocessing
 
+import z3
+from z3_exprs import serialize_expr
+
 llvm_insts = [inst for inst in sigs.keys() if inst.startswith('llvm')]
 
-def synthesize(insts, target, liveins):
+def synthesize(insts, target, liveins, timeout=5):
   g, nodes = make_fully_connected_graph(
       liveins=liveins,
       insts=[ConcreteInst(inst, imm8=None) for inst in insts],
@@ -21,7 +24,7 @@ def synthesize(insts, target, liveins):
     emit_everything(target, g, nodes, f)
     f.flush()
     subprocess.check_output('cc %s insts.o -o %s -I. 2>/dev/null' % (f.name, exe.name), shell=True)
-    p = subprocess.Popen(['timeout', '5', exe.name], stdout=subprocess.PIPE)
+    p = subprocess.Popen(['timeout', str(timeout), exe.name], stdout=subprocess.PIPE)
     return p.stdout.read()
 
 def check_synth_batched(insts_batch, target, liveins):
@@ -74,6 +77,10 @@ if __name__ == '__main__':
   num_rollouts = 64
   num_insts = len(llvm_insts)
 
+  num_rollouts = 12
+  num_threads = 12
+  batch_size = 1
+
   model = Sema2Insts(num_insts)
   try:
     model.load_state_dict(torch.load('synth.model'))
@@ -87,7 +94,14 @@ if __name__ == '__main__':
   num_solved = 0
   losses = []
   for i in pbar:
-    target, target_serialized, _, liveins = gen_expr()
+    #target, target_serialized, _, liveins = gen_expr()
+
+    x, y = z3.BitVecs('x y', 64)
+    liveins = [x,y]
+    target = z3.If(x >= y, x, y)  * y
+    target_serialized = serialize_expr(target)
+
+
     liveins = [(x.decl().name(), x.size()) for x in liveins]
     g, g_inv, ops, params, _ = expr2graph(target_serialized)
     inst_ids = unpack([insts2ids[i] for i in llvm_insts], num_insts)
@@ -96,8 +110,8 @@ if __name__ == '__main__':
     insts_batch = []
     log_probs = []
     solved = False
+    rollout_losses = []
     for _ in range(num_rollouts//num_threads):
-      rollout_losses = []
       for _ in range(num_threads):
         selected = torch.multinomial(inst_probs, max_insts, replacement=False)
         sample = torch.zeros(num_insts)

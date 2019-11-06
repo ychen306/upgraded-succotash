@@ -483,7 +483,7 @@ def compile(spec):
       retval = env.get_value('k')
     out_size = intrinsic_types[spec.rettype].bitwidth
     dst = z3.simplify(fix_bitwidth(retval, out_size), elim_sign_ext=False)
-    print(dst.sexpr())
+    print(dst)
     outputs = [dst] + outputs
   return param_vals, outputs
 
@@ -616,7 +616,7 @@ builtins = {
     'Saturate_Int64_To_Int16': gen_saturation_func(16, True, True),
     'Saturate_Int64_To_Int32': gen_saturation_func(32, True, True),
     'Saturate_Int64_To_Int8': gen_saturation_func(8, True, True),
-    'Saturate_To_Int16': gen_saturation_func(16, True, True),
+    'Saturate_To_Int16': gen_saturation_func(16, False, True),
     'Saturate_To_Int8': gen_saturation_func(8, True, True),
     'Saturate_To_UnsignedInt16': gen_saturation_func(16, True, False),
     'Saturate_To_UnsignedInt8': gen_saturation_func(8, True, False),
@@ -940,24 +940,23 @@ RETURN k
 </intrinsic>
   '''
   sema = '''
-<intrinsic tech="Other" rettype='int' name='_mm_popcnt_u32'>
+<intrinsic tech='AVX2' rettype='__m256i' name='_mm256_maddubs_epi16'>
 	<type>Integer</type>
-	<CPUID>POPCNT</CPUID>
-	<category>Bit Manipulation</category>
-	<parameter varname='a' type='unsigned int'/>
-	<description>
-		Count the number of bits set to 1 in unsigned 32-bit integer "a", and return that count in "dst". 
+	<CPUID>AVX2</CPUID>
+	<category>Arithmetic</category>
+	<parameter varname='a' type='__m256i'/>
+	<parameter varname='b' type='__m256i'/>
+	<description>Vertically multiply each unsigned 8-bit integer from "a" with the corresponding signed 8-bit integer from "b", producing intermediate signed 16-bit integers. Horizontally add adjacent pairs of intermediate signed 16-bit integers, and pack the saturated results in "dst".
 	</description>
 	<operation>
-dst := 0
-FOR i := 0 to 31
-	IF a[i]
-		dst := dst + 1
-	FI
+FOR j := 0 to 15
+	i := j*16
+	dst[i+15:i] := Saturate_To_Int16( a[i+15:i+8]*b[i+15:i+8] + a[i+7:i]*b[i+7:i] )
 ENDFOR
+dst[MAX:256] := 0
 	</operation>
-	<instruction name='popcnt' form='r32, r32'/>
-	<header>nmmintrin.h</header>
+	<instruction name='vpmaddubsw' form='ymm, ymm, ymm'/>
+	<header>immintrin.h</header>
 </intrinsic>
   '''
 

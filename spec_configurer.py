@@ -52,27 +52,23 @@ if __name__ == '__main__':
   from manual_parser import get_spec_from_xml
 
   sema = '''
-  <intrinsic tech='SSSE3' vexEq='TRUE' rettype='__m128i' name='_mm_sign_epi8'>
-        <type>Integer</type>
-        <CPUID>SSSE3</CPUID>
-        <category>Arithmetic</category>
-        <parameter varname='a' type='__m128i'/>
-        <parameter varname='b' type='__m128i'/>
-        <description>Negate packed 8-bit integers in "a" when the corresponding signed 8-bit integer in "b" is negative, and store the results in "dst". Element in "dst" are zeroed out when the corresponding element in "b" is zero.</description>
-        <operation>
+<intrinsic tech='AVX2' rettype='__m256i' name='_mm256_maddubs_epi16'>
+	<type>Integer</type>
+	<CPUID>AVX2</CPUID>
+	<category>Arithmetic</category>
+	<parameter varname='a' type='__m256i'/>
+	<parameter varname='b' type='__m256i'/>
+	<description>Vertically multiply each unsigned 8-bit integer from "a" with the corresponding signed 8-bit integer from "b", producing intermediate signed 16-bit integers. Horizontally add adjacent pairs of intermediate signed 16-bit integers, and pack the saturated results in "dst".
+	</description>
+	<operation>
 FOR j := 0 to 15
-        i := j*8
-        IF b[i+7:i] &lt; 0
-                dst[i+7:i] := -(a[i+7:i])
-        ELSE IF b[i+7:i] == 0
-                dst[i+7:i] := 0
-        ELSE
-                dst[i+7:i] := a[i+7:i]
-        FI
+	i := j*16
+	dst[i+15:i] := Saturate_To_Int16( a[i+15:i+8]*b[i+15:i+8] + a[i+7:i]*b[i+7:i] )
 ENDFOR
-        </operation>
-        <instruction name='psignb' form='xmm, xmm'/>
-        <header>tmmintrin.h</header>
+dst[MAX:256] := 0
+	</operation>
+	<instruction name='vpmaddubsw' form='ymm, ymm, ymm'/>
+	<header>immintrin.h</header>
 </intrinsic>
   '''
 
