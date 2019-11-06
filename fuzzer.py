@@ -427,22 +427,21 @@ OD
 </intrinsic>
   '''
   sema = '''
-<intrinsic tech='AVX' rettype='__m256d' name='_mm256_shuffle_pd'>
-	<type>Floating Point</type>
-	<CPUID>AVX</CPUID>
-	<category>Swizzle</category>
-	<parameter varname='a' type='__m256d'/>
-	<parameter varname='b' type='__m256d'/>
-	<parameter varname="imm8" type='const int'/>
-	<description>Shuffle double-precision (64-bit) floating-point elements within 128-bit lanes using the control in "imm8", and store the results in "dst". </description>
+<intrinsic tech='AVX2' rettype='__m128i' name='_mm_sllv_epi64'>
+	<type>Integer</type>
+	<CPUID>AVX2</CPUID>
+	<category>Shift</category>
+	<parameter varname='a' type='__m128i'/>
+	<parameter varname='count' type='__m128i'/>
+	<description>Shift packed 64-bit integers in "a" left by the amount specified by the corresponding element in "count" while shifting in zeros, and store the results in "dst". </description>
 	<operation>
-dst[63:0] := (imm8[0] == 0) ? a[63:0] : a[127:64]
-dst[127:64] := (imm8[1] == 0) ? b[63:0] : b[127:64]
-dst[191:128] := (imm8[2] == 0) ? a[191:128] : a[255:192]
-dst[255:192] := (imm8[3] == 0) ? b[191:128] : b[255:192]
-dst[MAX:256] := 0
+FOR j := 0 to 1
+	i := j*64
+	dst[i+63:i] := ZeroExtend(a[i+63:i] &lt;&lt; count[i+63:i])
+ENDFOR
+dst[MAX:128] := 0
 	</operation>
-	<instruction name='vshufpd' form='ymm, ymm, ymm, imm'/>
+	<instruction name='vpsllvq' form='xmm, xmm, xmm'/>
 	<header>immintrin.h</header>
 </intrinsic>
   '''
