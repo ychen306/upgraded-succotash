@@ -366,31 +366,32 @@ def p24(x, *_):
 def emit_inst_runners(sketch_nodes, out, h_out):
   emitted = set()
   for n in sketch_nodes.values():
-    if n.insts is None:
+    if n.inst_groups is None:
       continue
 
-    num_inputs = len(n.input_sizes)
-    num_outputs = len(n.output_sizes)
-    inputs = ['x%d' % i for i in range(num_inputs)]
-    outputs = ['y%d' % i for i in range(num_outputs)]
+    for inst_group in n.inst_groups:
+      num_inputs = len(inst_group.input_sizes)
+      num_outputs = len(inst_group.output_sizes)
+      inputs = ['x%d' % i for i in range(num_inputs)]
+      outputs = ['y%d' % i for i in range(num_outputs)]
 
-    for inst in n.insts:
-      if inst in emitted:
-        continue
-      emitted.add(inst)
-      decl = 'int run_{inst}_{imm8}(int num_tests, {params})\n'.format(
-        inst=inst.name, imm8=str(inst.imm8) if inst.imm8 else '0', 
-        params=', '.join('char *__restrict__ '+x for x in (inputs+outputs)),
-        )
-      h_out.write(decl + ';\n')
-      out.write(decl + '{\n')
-      out.write('for (int i = 0; i < num_tests; i++) {')
-      out.write(expr_generators[inst.name]('i', inputs, outputs, inst.imm8))
-      out.write('}\n') # end for
+      for inst in inst_group.insts:
+        if inst in emitted:
+          continue
+        emitted.add(inst)
+        decl = 'int run_{inst}_{imm8}(int num_tests, {params})\n'.format(
+          inst=inst.name, imm8=str(inst.imm8) if inst.imm8 else '0', 
+          params=', '.join('char *__restrict__ '+x for x in (inputs+outputs)),
+          )
+        h_out.write(decl + ';\n')
+        out.write(decl + '{\n')
+        out.write('for (int i = 0; i < num_tests; i++) {')
+        out.write(expr_generators[inst.name]('i', inputs, outputs, inst.imm8))
+        out.write('}\n') # end for
 
-      out.write('return 0;\n') # report we didn't encounter div-by-zero
+        out.write('return 0;\n') # report we didn't encounter div-by-zero
 
-      out.write('}\n') # end function
+        out.write('}\n') # end function
 
 def emit_everything(target, sketch_graph, sketch_nodes, out):
   '''
@@ -401,10 +402,10 @@ def emit_everything(target, sketch_graph, sketch_nodes, out):
   emit_includes(out)
   out.write('#include "insts.h"\n')
   insts = set()
-  inst_evaluations, liveins, configs = emit_inst_evaluations(target_size, g, nodes, out)
+  inst_evaluations, liveins, configs = emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out)
   emit_init(target, liveins, out)
   emit_solution_handler(configs, out)
-  emit_enumerator(target_size, nodes, inst_evaluations, configs, out)
+  emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out)
 
 def emit_insts_lib(out, h_out):
   for inst, (input_types, _) in sigs.items():
@@ -421,10 +422,13 @@ def emit_insts_lib(out, h_out):
   emit_includes(out)
   emit_inst_runners(nodes, out, h_out)
 
-
 if __name__ == '__main__':
   import sys
   insts = []
+
+  #with open('insts.c', 'w') as out, open('insts.h', 'w') as h_out:
+  #  emit_insts_lib(out, h_out)
+  #exit()
 
   for inst, (input_types, _) in sigs.items():
     #if not sigs[inst][1][0] == 128 and ('llvm' not in inst or '64' not in inst):
@@ -452,7 +456,3 @@ if __name__ == '__main__':
       insts=insts,
       num_levels=4)
   emit_everything(target, g, nodes, sys.stdout)
-  exit(0)
-
-  with open('insts.c', 'w') as out, open('insts.h', 'w') as h_out:
-    emit_insts_lib(out, h_out)
