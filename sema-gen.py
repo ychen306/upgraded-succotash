@@ -6,7 +6,7 @@ from spec_configurer import configure_spec
 from compiler import compile
 from spec_serializer import dump_spec
 
-data_f = sys.argv[1]
+data_f, out_fname = sys.argv[1:]
 data_root = ET.parse(data_f)
 
 num_parsed = 0
@@ -21,7 +21,7 @@ skipped = False
 skip_to = '_mm512_popcnt_epi16'
 skip_to = None
 
-outf = open('intrinsics.sema', 'w')
+outf = open(out_fname, 'w')
 
 for intrin in data_root.iter('intrinsic'):
   cpuid = intrin.find('CPUID')
