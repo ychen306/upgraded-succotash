@@ -11,7 +11,7 @@ def hello():
   dir = request.args['dir']
   exes = [NamedTemporaryFile(delete=False) for _ in files]
   lib = dir + '/' + 'insts.o'
-  compilations = [subprocess.Popen(['cc', '-o', exe.name, f, lib, '-I'+dir], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+  compilations = [subprocess.Popen(['cc', '-o', exe.name, f, lib, '-I'+dir, '-no-pie'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
       for exe, f in zip(exes, files)]
 
   enumerations = []
