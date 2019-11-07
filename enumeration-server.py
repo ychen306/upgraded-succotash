@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import subprocess
 from tempfile import NamedTemporaryFile
+import os
 
 app = Flask(__name__)
 
@@ -25,7 +26,8 @@ def hello():
     out = enum.stdout.readline()
     synthesized = len(out) > 1
     enum.kill()
-    exe.delete()
+    if os.path.exists(exe.name):
+      os.unlink(exe.name)
     results.append(synthesized)
 
   return jsonify(results)
