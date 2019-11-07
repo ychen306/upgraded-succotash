@@ -31,4 +31,4 @@ def hello():
 if __name__ == "__main__":
   import sys
   port = sys.argv[1]
-  app.run(port=port)
+  app.run(host='0.0.0.0', port=port)
