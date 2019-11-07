@@ -21,7 +21,7 @@ def hello():
     enumerations.append(subprocess.Popen(['timeout', timeout, exe.name], stdout=subprocess.PIPE))
 
   results = []
-  for enum, exe in enumerate(enumerations, exes):
+  for enum, exe in zip(enumerations, exes):
     out = enum.stdout.readline()
     synthesized = len(out) > 1
     enum.kill()
