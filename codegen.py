@@ -21,7 +21,7 @@ def address_of(x):
   return '&' + x;
 
 def get_int_min(bitwidth):
-  return { 8 : -128, 16: -32768, 32: -2147483648, 64: -9223372036854775807 }[bitwidth]
+  return { 8 : -128, 16: -32768, 32: -2147483648, 64: -9223372036854775808 }[bitwidth]
 
 def get_binary_expr_generator(op_syntax, in_bitwidth, out_bitwidth, signed, is_division):
   def codegen(i, args, results, imm8=None):
