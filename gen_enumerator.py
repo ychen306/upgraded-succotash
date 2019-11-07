@@ -11,6 +11,7 @@ def debug(*args):
   print(*args, file=sys.stderr)
 
 constants = [0,1,2,4,8,16,32,64,128]
+constants = []
 constant_pool = list(zip(constants, itertools.repeat(8)))
 
 InstGroup = namedtuple('InstGroup', ['insts', 'input_sizes', 'output_sizes'])

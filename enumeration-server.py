@@ -9,7 +9,7 @@ def hello():
   files = request.args['files'].split(',')
   timeout = request.args['timeout']
   dir = request.args['dir']
-  exes = [NamedTemporaryFile() for _ in files]
+  exes = [NamedTemporaryFile(delete=False) for _ in files]
   lib = dir + '/' + 'insts.o'
   compilations = [subprocess.Popen(['cc', '-o', exe.name, f, lib, '-I'+dir], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
       for exe, f in zip(exes, files)]
@@ -17,13 +17,15 @@ def hello():
   enumerations = []
   for compilation, exe in zip(compilations, exes):
     compilation.communicate()
+    exe.close()
     enumerations.append(subprocess.Popen(['timeout', timeout, exe.name], stdout=subprocess.PIPE))
 
   results = []
-  for enum in enumerations:
+  for enum, exe in enumerate(enumerations, exes):
     out = enum.stdout.readline()
     synthesized = len(out) > 1
     enum.kill()
+    exe.delete()
     results.append(synthesized)
 
   return jsonify(results)
