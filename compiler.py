@@ -483,7 +483,6 @@ def compile(spec):
       retval = env.get_value('k')
     out_size = intrinsic_types[spec.rettype].bitwidth
     dst = z3.simplify(fix_bitwidth(retval, out_size), elim_sign_ext=False)
-    print(dst)
     outputs = [dst] + outputs
   return param_vals, outputs
 

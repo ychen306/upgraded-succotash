@@ -9,8 +9,10 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 import multiprocessing
+from io import StringIO
 
 import grequests
+import json
 
 import z3
 from z3_exprs import serialize_expr
@@ -72,33 +74,32 @@ def check_synth_batched(insts_batch, target, liveins):
 
 def check_synth_batched_remote(insts_batch, target, liveins, temp_dir, server, dir, timeout=5):
   batch_size = len(insts_batch)
-  c_files = [NamedTemporaryFile(mode='w', suffix='.c', dir=temp_dir) for _ in range(batch_size)]
 
   generated = []
-  for insts, f in zip(insts_batch, c_files):
-    g, nodes = make_fully_connected_graph(
-        liveins=liveins,
-        insts=[ConcreteInst(inst, imm8=None) for inst in insts],
-        num_levels=4)
-    try:
-      emit_everything(target, g, nodes, f)
-    except:
-      compilations.append(None)
-      generated.append(False)
-      continue
-    generated.append(True)
-    f.flush()
+  job = {
+      'files': [],
+      'timeout': str(timeout),
+      'dir': dir
+      }
+  for insts in insts_batch:
+    with StringIO() as buf:
+      g, nodes = make_fully_connected_graph(
+          liveins=liveins,
+          insts=[ConcreteInst(inst, imm8=None) for inst in insts],
+          num_levels=4)
+      try:
+        emit_everything(target, g, nodes, buf)
+      except:
+        compilations.append(None)
+        generated.append(False)
+        continue
+      generated.append(True)
+      job['files'].append(buf.getvalue())
 
-  req = grequests.get(server, params={
-    'files': ','.join(f.name for f in c_files),
-    'dir': dir,
-    'timeout': str(timeout)}
-    )
+  req = grequests.post(server, data=json.dumps(job))
 
   def callback(resp):
     results_filtered = resp.json()
-    for f in c_files:
-      f.close()
 
     results = []
     i = 0
@@ -127,9 +128,12 @@ class ServerSelector:
 if __name__ == '__main__':
   import sys
 
-  temp_dir, dir = sys.argv[1:]
+  servers_f, temp_dir, dir = sys.argv[1:]
 
-  servers = ['http://localhost:5000', 'http://localhost:4242']
+  with open(servers_f) as f:
+    servers = []
+    for line in f:
+      servers.append(line.strip())
   server_selector = ServerSelector(servers)
 
   epoch = 50000

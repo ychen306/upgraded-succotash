@@ -450,6 +450,7 @@ if __name__ == '__main__':
 
   #with open('insts.c', 'w') as out, open('insts.h', 'w') as h_out:
   #  emit_insts_lib(out, h_out)
+  #exit()
 
   for inst, (input_types, _) in sigs.items():
     #if ((sigs[inst][1][0] not in (256,128) or ('epi64' not in inst)) and

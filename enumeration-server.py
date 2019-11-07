@@ -2,18 +2,26 @@ from flask import Flask, request, jsonify
 import subprocess
 from tempfile import NamedTemporaryFile
 import os
+import json
 
 app = Flask(__name__)
 
-@app.route("/")
+@app.route("/", methods=['POST'])
 def hello():
-  files = request.args['files'].split(',')
-  timeout = request.args['timeout']
-  dir = request.args['dir']
-  exes = [NamedTemporaryFile(delete=False) for _ in files]
+  job = json.loads(request.data)
+  contents = job['files']
+  timeout = job['timeout']
+  dir = job['dir']
+  exes = [NamedTemporaryFile(delete=False) for _ in contents]
+  c_files = [NamedTemporaryFile(mode='w', suffix='.c') for _ in contents]
+
+  for content, f in zip(contents, c_files):
+    f.write(content)
+    f.flush()
+
   lib = dir + '/' + 'insts.o'
-  compilations = [subprocess.Popen(['cc', '-o', exe.name, f, lib, '-I'+dir, '-no-pie'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-      for exe, f in zip(exes, files)]
+  compilations = [subprocess.Popen(['cc', '-o', exe.name, f.name, lib, '-I'+dir, '-no-pie'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+      for exe, f in zip(exes, c_files)]
 
   enumerations = []
   for compilation, exe in zip(compilations, exes):
