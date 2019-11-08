@@ -9,7 +9,7 @@ from z3_utils import deserialize_z3_expr
 
 app = Flask(__name__)
 
-def check_synth_batched(insts_batch, target, liveins):
+def check_synth_batched(insts_batch, target, liveins, timeout):
   batch_size = len(insts_batch)
   c_files = [NamedTemporaryFile(mode='w', suffix='.c') for _ in range(batch_size)]
   exe_files = [NamedTemporaryFile(delete=False) for _ in range(batch_size)]
@@ -35,7 +35,7 @@ def check_synth_batched(insts_batch, target, liveins):
       synth_jobs.append(None)
       continue
     compilation.communicate()
-    synth_jobs.append(subprocess.Popen(['timeout', '5', exe.name], stdout=subprocess.PIPE))
+    synth_jobs.append(subprocess.Popen(['timeout', timeout, exe.name], stdout=subprocess.PIPE))
 
   results = []
   for i, synth_job in enumerate(synth_jobs):
@@ -56,8 +56,10 @@ def hello():
   job = json.loads(request.data)
   insts_batch = job['insts_batch']
   target = deserialize_z3_expr(job['target'])
+  timeout = job['timeout']
+
   liveins = job['liveins']
-  results = check_synth_batched(insts_batch, target, liveins)
+  results = check_synth_batched(insts_batch, target, liveins, timeout)
   return jsonify(results)
   
 

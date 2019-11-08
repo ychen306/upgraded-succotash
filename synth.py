@@ -8,10 +8,10 @@ from torch.distributions import Bernoulli, Multinomial
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
-import multiprocessing
 from io import StringIO
+import multiprocessing
 
-import grequests
+import requests
 import json
 
 import z3
@@ -19,6 +19,9 @@ from z3_exprs import serialize_expr
 from z3_utils import serialize_z3_expr
 
 llvm_insts = [inst for inst in sigs.keys() if inst.startswith('llvm')]
+
+job_queue = multiprocessing.Queue()
+result_queue = multiprocessing.Queue()
 
 def synthesize(insts, target, liveins, timeout=5):
   g, nodes = make_fully_connected_graph(
@@ -32,22 +35,6 @@ def synthesize(insts, target, liveins, timeout=5):
     p = subprocess.Popen(['timeout', str(timeout), exe.name], stdout=subprocess.PIPE)
     return p.stdout.read()
 
-def check_synth_batched_remote(insts_batch, target, liveins, temp_dir, server, dir, timeout=5):
-  batch_size = len(insts_batch)
-
-  job = {
-      'insts_batch': insts_batch,
-      'liveins': liveins,
-      'target': serialize_z3_expr(target)
-      }
-  req = grequests.post(server, data=json.dumps(job))
-
-  def callback(resp):
-    results = resp.json()
-    return torch.tensor(results)
-
-  return req, callback
-
 class ServerSelector:
   def __init__(self, servers):
     self.servers = servers
@@ -58,6 +45,14 @@ class ServerSelector:
     # bump the counter
     self.counter = (self.counter + 1) % len(self.servers)
     return server
+
+def worker(job_queue, result_queue):
+  while True:
+    job = job_queue.get(True)
+    job_id = job.pop('job_id')
+    server = job.pop('server')
+    resp = requests.post(server, data=json.dumps(job))
+    result_queue.put((job_id, resp.json()))
 
 if __name__ == '__main__':
   import sys
@@ -72,6 +67,8 @@ if __name__ == '__main__':
     dir = config['dir']
   server_selector = ServerSelector(servers)
 
+  pool = multiprocessing.Pool(len(servers), worker, (job_queue, result_queue))
+
   epoch = 50000
   batch_size = 4
   max_insts = 20
@@ -85,7 +82,6 @@ if __name__ == '__main__':
   except:
     print('Failed to reload model state')
 
-  #optimizer = optim.Adam(model.parameters(), lr=2.5e-5)
   optimizer = optim.Adam(model.parameters())
 
   pbar = tqdm(list(range(epoch)))
@@ -107,6 +103,7 @@ if __name__ == '__main__':
     trials = 0
     inflight_jobs = []
     successes = 0
+    job_to_log_probs = {}
     while trials < num_rollouts:
       log_probs = []
       insts_batch = []
@@ -120,25 +117,28 @@ if __name__ == '__main__':
         selected_insts = [llvm_insts[i] for i, selected in enumerate(sample) if selected > 0]
         insts_batch.append(selected_insts)
 
-      # send the request
-      req, callback = check_synth_batched_remote(insts_batch, target, liveins, temp_dir=temp_dir, dir=dir, server=server_selector.select())
-      reqs.append(req)
-      # keep track of the inflight job
-      inflight_jobs.append((callback, torch.stack(log_probs)))
       trials += num_threads
 
-      if len(inflight_jobs) == len(servers) or trials >= num_rollouts:
-        # wait for the jobs to finish before we send more jobs
-        resps = grequests.map(reqs)
-        for resp, (cb, log_prob) in zip(resps, inflight_jobs):
-          results = cb(resp)
-          solved = solved or results.sum() > 0
-          rollout_losses.append(-(log_prob * results).mean())
-          successes += results.sum()
-        inflight_jobs = []
-        reqs = []
+      # enqueue a batch of enumeration job
+      job_id = len(job_to_log_probs)
+      job_to_log_probs[job_id] = torch.stack(log_probs)
+      job = {
+          'insts_batch': insts_batch,
+          'liveins': liveins,
+          'target': serialize_z3_expr(target),
+          'timeout': str(5),
+          'server': server_selector.select(),
+          'job_id': job_id
+          }
+      job_queue.put(job)
 
-    num_solved += int(solved)
+    while len(job_to_log_probs) > 0:
+      job_id, results = result_queue.get(True)
+      log_prob = job_to_log_probs.pop(job_id)
+      rollout_losses.append(-(log_prob * torch.tensor(results)).mean())
+      successes += sum(results)
+
+    num_solved += int(successes > 0)
     loss = torch.stack(rollout_losses).mean()
     losses.append(loss)
     pbar.set_description('loss: %.4f, num_syntheized: %d/%d, # solved: %.4f' % (
