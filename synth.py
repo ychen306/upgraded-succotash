@@ -16,6 +16,7 @@ import json
 
 import z3
 from z3_exprs import serialize_expr
+from z3_utils import serialize_z3_expr
 
 llvm_insts = [inst for inst in sigs.keys() if inst.startswith('llvm')]
 
@@ -31,85 +32,18 @@ def synthesize(insts, target, liveins, timeout=5):
     p = subprocess.Popen(['timeout', str(timeout), exe.name], stdout=subprocess.PIPE)
     return p.stdout.read()
 
-def check_synth_batched(insts_batch, target, liveins):
-  batch_size = len(insts_batch)
-  c_files = [NamedTemporaryFile(mode='w', suffix='.c') for _ in range(batch_size)]
-  exe_files = [NamedTemporaryFile() for _ in range(batch_size)]
-
-  compilations = []
-  for insts, f, exe in zip(insts_batch, c_files, exe_files):
-    g, nodes = make_fully_connected_graph(
-        liveins=liveins,
-        insts=[ConcreteInst(inst, imm8=None) for inst in insts],
-        num_levels=4)
-    try:
-      emit_everything(target, g, nodes, f)
-    except:
-      compilations.append(None)
-      continue
-    f.flush()
-    compilations.append(subprocess.Popen('cc %s insts.o -o %s -I. 2>/dev/null' % (f.name, exe.name), shell=True))
-
-  synth_jobs = []
-  for compilation, exe in zip(compilations, exe_files):
-    if compilation is None:
-      synth_jobs.append(None)
-      continue
-    compilation.communicate()
-    synth_jobs.append(subprocess.Popen(['timeout', '5', exe.name], stdout=subprocess.PIPE))
-
-  results = []
-  for i, synth_job in enumerate(synth_jobs):
-    if synth_job is None:
-      results.append(0)
-    else:
-      out = synth_job.stdout.readline()
-      synthesized = len(out) > 1
-      results.append(1.0 if synthesized else 0.0)
-      synth_job.kill()
-    c_files[i].close()
-    exe_files[i].close()
-
-  return torch.tensor(results)
-
 def check_synth_batched_remote(insts_batch, target, liveins, temp_dir, server, dir, timeout=5):
   batch_size = len(insts_batch)
 
-  generated = []
   job = {
-      'files': [],
-      'timeout': str(timeout),
-      'dir': dir
+      'insts_batch': insts_batch,
+      'liveins': liveins,
+      'target': serialize_z3_expr(target)
       }
-  for insts in insts_batch:
-    with StringIO() as buf:
-      g, nodes = make_fully_connected_graph(
-          liveins=liveins,
-          insts=[ConcreteInst(inst, imm8=None) for inst in insts],
-          num_levels=4)
-      try:
-        emit_everything(target, g, nodes, buf)
-      except:
-        compilations.append(None)
-        generated.append(False)
-        continue
-      generated.append(True)
-      job['files'].append(buf.getvalue())
-
   req = grequests.post(server, data=json.dumps(job))
 
   def callback(resp):
-    results_filtered = resp.json()
-
-    results = []
-    i = 0
-    for ok in generated:
-      if not ok:
-        results.append(0.0)
-        continue
-      results.append(1.0 if results_filtered[i] else 0.0)
-      i += 1
-
+    results = resp.json()
     return torch.tensor(results)
 
   return req, callback
@@ -128,23 +62,22 @@ class ServerSelector:
 if __name__ == '__main__':
   import sys
 
-  servers_f, temp_dir, dir = sys.argv[1:]
+  config_f = sys.argv[1]
 
-  with open(servers_f) as f:
-    servers = []
-    for line in f:
-      servers.append(line.strip())
+  with open(config_f) as f:
+    config = json.load(f)
+    servers = config['servers']
+    num_threads = int(config['num_threads'])
+    temp_dir = config['temp_dir']
+    dir = config['dir']
   server_selector = ServerSelector(servers)
 
   epoch = 50000
   batch_size = 4
-  num_threads = 16
   max_insts = 20
   beta = 0.05
-  num_rollouts = 64
+  num_rollouts = 760
   num_insts = len(llvm_insts)
-
-  num_threads = 32
 
   model = Sema2Insts(num_insts)
   try:
@@ -173,6 +106,7 @@ if __name__ == '__main__':
 
     trials = 0
     inflight_jobs = []
+    successes = 0
     while trials < num_rollouts:
       log_probs = []
       insts_batch = []
@@ -200,6 +134,7 @@ if __name__ == '__main__':
           results = cb(resp)
           solved = solved or results.sum() > 0
           rollout_losses.append(-(log_prob * results).mean())
+          successes += results.sum()
         inflight_jobs = []
         reqs = []
 
@@ -207,7 +142,7 @@ if __name__ == '__main__':
     loss = torch.stack(rollout_losses).mean()
     losses.append(loss)
     pbar.set_description('loss: %.4f, num_syntheized: %d/%d, # solved: %.4f' % (
-      float(loss), int(results.sum()), trials, num_solved/(i+1)))
+      float(loss), int(successes), trials, num_solved/(i+1)))
 
     if len(losses) == batch_size:
       loss = torch.stack(losses).mean()

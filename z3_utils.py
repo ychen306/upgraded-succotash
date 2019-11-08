@@ -92,3 +92,15 @@ def equivalent(a, b, test_cases):
 
   return all(z3.is_true(eval_z3_expr(a==b, test_case))
       for test_case in test_cases)
+
+def serialize_z3_expr(expr):
+  s.push()
+  s.add(expr == 0)
+  dummy_bench = s.to_smt2()
+  s.pop()
+  return dummy_bench
+
+def deserialize_z3_expr(serialized):
+  s = z3.Solver()
+  s.from_string(serialized)
+  return s.assertions()[0].children()[0]
