@@ -2,7 +2,7 @@ from gen_enumerator import emit_everything, make_fully_connected_graph, Concrete
 from expr_sampler import sigs, gen_expr
 from tempfile import NamedTemporaryFile
 import subprocess
-from sema2insts import Sema2Insts, expr2graph, unpack, insts2ids
+from sema2insts import Sema2Insts, expr2graph, unpack
 from tqdm import tqdm
 from torch.distributions import Bernoulli, Multinomial
 import torch
@@ -26,7 +26,7 @@ result_queue = multiprocessing.Queue()
 def synthesize(insts, target, liveins, timeout=5):
   g, nodes = make_fully_connected_graph(
       liveins=liveins,
-      insts=[ConcreteInst(inst, imm8=None) for inst in insts],
+      insts=[ConcreteInst(inst, imm8=imm8) for inst, imm8 in insts],
       num_levels=4)
   with NamedTemporaryFile(mode='w', suffix='.c') as f, NamedTemporaryFile() as exe:
     emit_everything(target, g, nodes, f)
@@ -34,6 +34,48 @@ def synthesize(insts, target, liveins, timeout=5):
     subprocess.check_output('cc %s insts.o -o %s -I. 2>/dev/null' % (f.name, exe.name), shell=True)
     p = subprocess.Popen(['timeout', str(timeout), exe.name], stdout=subprocess.PIPE)
     return p.stdout.read()
+
+def check_synth_batched(insts_batch, target, liveins, timeout=5):
+  batch_size = len(insts_batch)
+  c_files = [NamedTemporaryFile(mode='w', suffix='.c') for _ in range(batch_size)]
+  exe_files = [NamedTemporaryFile(delete=False) for _ in range(batch_size)]
+
+  compilations = []
+  for insts, f, exe in zip(insts_batch, c_files, exe_files):
+    g, nodes = make_fully_connected_graph(
+        liveins=liveins,
+        insts=[ConcreteInst(inst, imm8=imm8) for inst, imm8 in insts],
+        num_levels=4)
+    try:
+      emit_everything(target, g, nodes, f)
+    except:
+      compilations.append(None)
+      continue
+    f.flush()
+    exe.close()
+    compilations.append(subprocess.Popen('gcc %s insts.o -o %s -I. -no-pie 2>/dev/null' % (f.name, exe.name), shell=True))
+
+  synth_jobs = []
+  for compilation, exe in zip(compilations, exe_files):
+    if compilation is None:
+      synth_jobs.append(None)
+      continue
+    compilation.communicate()
+    synth_jobs.append(subprocess.Popen(['timeout', str(timeout), exe.name], stdout=subprocess.PIPE))
+
+  results = []
+  for i, synth_job in enumerate(synth_jobs):
+    if synth_job is None:
+      results.append(0)
+    else:
+      out = synth_job.stdout.readline()
+      synthesized = len(out) > 1
+      results.append(1.0 if synthesized else 0.0)
+      synth_job.kill()
+    c_files[i].close()
+    exe_files[i].close()
+
+  return results
 
 class ServerSelector:
   def __init__(self, servers):
@@ -69,12 +111,23 @@ if __name__ == '__main__':
 
   pool = multiprocessing.Pool(len(servers), worker, (job_queue, result_queue))
 
+  inst_pool = []
+  for inst, (input_types, _) in sigs.items():
+    has_imm8 = any(ty.is_constant for ty in input_types)
+    if not has_imm8:
+      inst_pool.append((inst, None))
+    else:
+      for imm8 in range(255):
+        inst_pool.append((inst, str(imm8)))
+  print('Num insts:', len(inst_pool))
+
   epoch = 50000
   batch_size = 4
   max_insts = 20
   beta = 0.05
   num_rollouts = 760
-  num_insts = len(llvm_insts)
+  num_insts = len(inst_pool)
+  insts2ids = { inst : i for i, inst in enumerate(inst_pool) }
 
   model = Sema2Insts(num_insts)
   try:
@@ -93,7 +146,7 @@ if __name__ == '__main__':
     target, target_serialized, _, liveins = gen_expr()
     liveins = [(x.decl().name(), x.size()) for x in liveins]
     g, g_inv, ops, params, _ = expr2graph(target_serialized)
-    inst_ids = unpack([insts2ids[i] for i in llvm_insts], num_insts)
+    inst_ids = unpack([insts2ids[i] for i in inst_pool], num_insts)
     inst_probs = model(g, g_inv, ops, params).softmax(dim=0)
     inst_dist = Multinomial(max_insts, inst_probs)
 
@@ -114,7 +167,7 @@ if __name__ == '__main__':
         sample = torch.zeros(num_insts)
         sample[selected] = 1
         log_probs.append(inst_dist.log_prob(sample).sum())
-        selected_insts = [llvm_insts[i] for i, selected in enumerate(sample) if selected > 0]
+        selected_insts = [inst_pool[i] for i in selected]
         insts_batch.append(selected_insts)
 
       trials += num_threads
@@ -141,7 +194,7 @@ if __name__ == '__main__':
     num_solved += int(successes > 0)
     loss = torch.stack(rollout_losses).mean()
     losses.append(loss)
-    pbar.set_description('loss: %.4f, num_syntheized: %d/%d, # solved: %.4f' % (
+    pbar.set_description('loss: %.4f, num_synthesized: %d/%d, # solved: %.4f' % (
       float(loss), int(successes), trials, num_solved/(i+1)))
 
     if len(losses) == batch_size:

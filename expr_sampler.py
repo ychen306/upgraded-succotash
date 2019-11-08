@@ -125,7 +125,6 @@ categories = categorize_by_output(sigs)
 
 def sample_expr(rounds):
   bitwidths = [8, 16, 32, 64, 128, 256, 512]
-  bitwidths = [8, 16, 32, 64]
   num_inputs = int(random.gauss(4, 1)+1)
   inputs = []
   for i in range(num_inputs):

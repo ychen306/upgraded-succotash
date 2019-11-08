@@ -29,6 +29,6 @@ insts_batch = [[llvm_insts[i] for i in inst_indices] for inst_indices in samples
 print('SYNTHESIZING')
 synthesized = check_synth_batched(insts_batch, target, liveins)
 print(synthesized)
-insts = insts_batch[synthesized.topk(1).indices[0]]
+insts = insts_batch[torch.tensor(synthesized).topk(1)[1][0]]
 print(insts)
 print(synthesize(insts, target, liveins).decode('utf-8'))
