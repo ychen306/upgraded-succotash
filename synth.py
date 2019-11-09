@@ -112,13 +112,10 @@ if __name__ == '__main__':
   pool = multiprocessing.Pool(len(servers), worker, (job_queue, result_queue))
 
   inst_pool = []
-  for inst, (input_types, _) in sigs.items():
-    has_imm8 = any(ty.is_constant for ty in input_types)
-    if not has_imm8:
-      inst_pool.append((inst, None))
-    else:
-      for imm8 in range(255):
-        inst_pool.append((inst, str(imm8)))
+  with open('instantiated-insts.json') as f:
+    for inst, imm8 in json.load(f):
+      inst_pool.append((inst, imm8))
+
   print('Num insts:', len(inst_pool))
 
   epoch = 50000
@@ -188,7 +185,7 @@ if __name__ == '__main__':
     while len(job_to_log_probs) > 0:
       job_id, results = result_queue.get(True)
       log_prob = job_to_log_probs.pop(job_id)
-      rollout_losses.append(-(log_prob * torch.tensor(results)).mean())
+      rollout_losses.append(-(log_prob * torch.FloatTensor(results)).mean())
       successes += sum(results)
 
     num_solved += int(successes > 0)

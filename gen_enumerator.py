@@ -250,6 +250,8 @@ def emit_solution_handler(configs, out):
   out.write('void handle_solution(int num_evaluated, int _) {\n')
   out.write('printf("found a solution at iter %lu!\\n", num_evaluated);\n')
   for node_configs in configs:
+    if len(node_configs) == 0:
+      continue
     node_id = node_configs[0].node_id
     out.write('printf("%d = ");\n' % node_id)
     for inst_config in node_configs:
@@ -433,7 +435,7 @@ def emit_insts_lib(out, h_out):
     if not has_imm8:
       insts.append(ConcreteInst(inst, imm8=None))
     else:
-      for imm8 in range(255):
+      for imm8 in range(256):
         insts.append(ConcreteInst(inst, imm8=str(imm8)))
   _, nodes = make_fully_connected_graph(
       liveins=[('x', 64), ('y', 64)],
@@ -453,13 +455,15 @@ if __name__ == '__main__':
   exit()
 
   for inst, (input_types, _) in sigs.items():
+    if sigs[inst][1][0] not in (256, ):
+      continue
     #if ((sigs[inst][1][0] not in (256,128) or ('epi64' not in inst)) and
     #    ('llvm' not in inst or '64' not in inst)):
     #  if 'broadcast' not in inst:
     #    continue
 
-    if 'llvm' not in inst or '64' not in inst:
-      continue
+    #if 'llvm' not in inst or '64' not in inst:
+    #  continue
 
     #if not sigs[inst][1][0] == 64:
     #  continue
@@ -470,12 +474,12 @@ if __name__ == '__main__':
     else:
       insts.append(ConcreteInst(inst, imm8=str(0)))
       continue
-      for imm8 in range(255):
+      for imm8 in range(256):
         insts.append(ConcreteInst(inst, imm8=str(imm8)))
 
-  liveins = [('x', 64), ('y', 64)]
-  x, y = z3.BitVecs('x y', 64)
-  target = x * 8 
+  liveins = [('x', 256), ('y', 256)]
+  x, y = z3.BitVecs('x y', 256)
+  target = x * 8
 
   g, nodes = make_fully_connected_graph(
       liveins=liveins,
