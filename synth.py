@@ -13,6 +13,7 @@ import multiprocessing
 
 import requests
 import json
+import os
 
 import z3
 from z3_exprs import serialize_expr
@@ -74,6 +75,8 @@ def check_synth_batched(insts_batch, target, liveins, timeout=5):
       synth_job.kill()
     c_files[i].close()
     exe_files[i].close()
+    if os.path.exists(exe_files[i].name):
+      os.remove(exe_files[i].name)
 
   return results
 
