@@ -88,15 +88,14 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
       with io.StringIO() as out:
         num_inputs = len(inst_group.input_sizes)
         num_outputs = len(inst_group.output_sizes)
-      
-        out.write('{\n') # new scope
 
-        out.write('int div_by_zero = 0;\n')
+        out.write('{\n') # new scope
 
         # generate code to select arguments
         arg_configs = []
         inst_group_inactive = False
         for i, x_size in enumerate(inst_group.input_sizes):
+          x_size_bytes = max(x_size, 8) // 8
 
           usable_outputs = get_usable_inputs(x_size, sketch_graph, sketch_nodes, outputs, v)
           if len(usable_outputs) == 0:
@@ -105,13 +104,17 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
             inst_group_inactive = True
             break
 
-          x = 'x%i' % i
+          x = 'x%d' % i
           out.write('char *%s;\n' % x)
+      
           arg_config = 'arg_%d_%d_%d' % (v, group_id, i)
           out.write('switch (%s) {\n' % arg_config)
           for j, (w, group_id2, var_to_use, _) in enumerate(usable_outputs):
+            var_is_livein = any(var_to_use == var for var, _ , _ in liveins) 
+            if var_is_livein:
+              var_to_use = '(%s+test_id * %d)' % (var_to_use, x_size_bytes)
             # bail if the group whose output we are using is not active
-            guard_inactive_input = 'if (!active_{w}_{group_id}) continue;'.format(w=w, group_id=group_id2)
+            guard_inactive_input = 'if (!active_{w}_{group_id}) return;'.format(w=w, group_id=group_id2)
             if sketch_nodes[w].inst_groups is None:
               # w is one of the livens so always active:
               guard_inactive_input = ''
@@ -126,7 +129,6 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
           continue
 
         v_outputs = ['y_%d_%d_%d'%(v, group_id, i) for i in range(num_outputs)]
-        arg_list = ['x%d'%i for i in range(num_inputs)] + [y for y in v_outputs]
           
         num_insts = len(inst_group.insts)
         node_configs.append(
@@ -137,13 +139,11 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
         inputs = ['x%d'%i for i in range(num_inputs)]
         for i, inst in enumerate(inst_group.insts):
           out.write('case %d: {\n' % i)
-          out.write('div_by_zero = run_{inst}_{imm8}(num_tests, {args});\n'.format(
-            inst=inst.name, args=', '.join(inputs + v_outputs), imm8=str(inst.imm8) if inst.imm8 else '0'))
+          computation = expr_generators[inst.name]('0', 
+            inputs, ['&'+y for y in v_outputs], str(inst.imm8), using_gpu=True)
+          out.write(computation)
           out.write('} break;\n') # end case
         out.write('}\n') # end switch
-
-        # skip this instruction if it divs by zero
-        out.write('if (div_by_zero) continue;\n')
 
         out.write('}\n') # end scope
 
@@ -159,25 +159,21 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
     for v in sketch_graph:
       visit(v)
 
-  # allocate the buffers storing the variables/temporaries
+  livein_names = [x for x, _, _ in liveins]
+
+  # allocate global buffers for livens and the target
   for bufs in outputs.values():
     for _, var, size in bufs:
+      if var not in livein_names:
+        continue
       bytes = max(size, 8) // 8
-      out.write('static char %s[%d] __attribute__ ((aligned (64)));\n' % (var, bytes * max_tests))
-  # also allocate the variable storing the targets
+      out.write('char %s_host[%d];\n' % (var, bytes * max_tests))
+
+  # also allocate buffer to store the target
   target_bytes = max(target_size, 8) // 8
-  out.write('static char target[%d];\n' % (target_bytes * max_tests))
+  out.write('char target_host[%d];\n' % (target_bytes * max_tests))
 
-  # declare the configs as global variable
-  for node_configs in configs:
-    for inst_config in node_configs:
-      out.write('static int active_%d_%d = 0;\n' % (inst_config.node_id, inst_config.group_id))
-      out.write('static int %s = -1;\n' % inst_config.name)
-      for arg in inst_config.args:
-        out.write('static int %s = -1;\n' % arg.name)
-  out.write('static unsigned long long num_evaluated = 0;\n')
-
-  return inst_evaluations, liveins, configs
+  return outputs, inst_evaluations, liveins, configs
 
 def emit_includes(out):
   out.write('#include <string.h>\n') # memcmp
@@ -187,63 +183,105 @@ def emit_includes(out):
   out.write('#define __int64_t __int64\n')
   out.write('#define __int64 long long\n')
 
-# FIXME: this is broken (asymptotically)!!!! We shouldn't nest two `parallel' nodes together
-def emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out):
-  next_node_id = None
+def emit_enumerator(outputs, liveins, target_size, sketch_nodes, inst_evaluations, configs, out):
+  livein_names = [x for x, _, _ in liveins]
+  params = livein_names + ['target']
+  param_list = ', '.join('char *'+p for p in params)
+  out.write('__global__ void run_inst(%s) {\n' % param_list)
+  out.write('int idx = threadIdx.x + blockDim.x * blockIdx.x;\n')
+  # FIXME : dont hard-code 32
+  out.write('int config_id = idx / 32;\n')
+  out.write('int test_id = idx % 32;\n')
+
+  # allocate the buffers storing the variables/temporaries
+  for bufs in outputs.values():
+    for _, var, size in bufs:
+      if var in livein_names:
+        continue
+      bytes = max(size, 8) // 8
+      out.write('char __align__(64) %s[%d];\n' % (var, bytes))
+
+  # declare the ``active'' flags
+  for node_configs in configs:
+    for inst_config in node_configs:
+      out.write('int active_%d_%d = 0;\n' % (inst_config.node_id, inst_config.group_id))
 
   # reverse the top-sorted inst/configs and emit code for the last instruction group
-  for node_configs, node_evals in reversed(list(zip(configs, inst_evaluations))):
+  for node_configs, node_evals in list(zip(configs, inst_evaluations)):
     node_id = node_configs[0].node_id
-    out.write('static void run_node_%d(int num_tests) {\n' % node_id)
 
     # go through each inst group
+    num_configs_in_node = 1
+    num_group_configs = []
     for inst_eval, inst_config in zip(node_evals, node_configs):
+      num_configs = len(inst_config.options)
+      for arg in inst_config.args:
+          num_configs *= len(arg.options)
+      num_configs_in_node += num_configs
+      num_group_configs.append(num_configs)
+
+    node_config_id = 'node_config_id_%d' % inst_config.node_id
+    out.write('int {node_config_id} = config_id % {num_configs_in_node};\n'.format(
+      node_config_id=node_config_id, num_configs_in_node=num_configs_in_node
+      ))
+    out.write('config_id /= {num_configs_in_node};\n'.format(num_configs_in_node=num_configs_in_node))
+
+    configs_processed = 0
+    for inst_eval, inst_config, num_configs in zip(node_evals, node_configs, num_group_configs):
+      out.write('if ({node_config_id} >= 0 && {node_config_id} < {hi}) {{\n'.format(
+        node_config_id=node_config_id, hi=num_configs))
 
       # activate this group
       out.write('active_%d_%d = 1;\n' % (inst_config.node_id, inst_config.group_id))
 
-      # remember the number of right braces we need to close
-      num_right_braces = 1
-      out.write('for ({op} = 0; {op} < {options}; {op}++) {{\n'.format(
-        op=inst_config.name, options=len(inst_config.options)))
+      # decode the inst opcode
+      out.write('int {op} = {node_config_id} % {num_insts};\n'.format(
+        op=inst_config.name, node_config_id=node_config_id, num_insts=len(inst_config.options)))
+      out.write('{node_config_id} /= {num_insts};\n'.format(
+        node_config_id=node_config_id, num_insts=len(inst_config.options)))
 
-
+      # decode the operands
       for arg in inst_config.args:
-        out.write('for ({arg} = 0; {arg} < {options}; {arg}++) {{\n'.format(
-          arg=arg.name, options=len(arg.options)))
-        num_right_braces += 1
+        out.write('int {arg} = {node_config_id} % {num_args};\n'.format(
+          arg=arg.name, node_config_id=node_config_id, num_args=len(arg.options)))
+        out.write('{node_config_id} /= {num_args};\n'.format(
+          node_config_id=node_config_id, num_args=len(arg.options)))
 
       # evaluate the inst once we've fixed its configs
       out.write(inst_eval)
 
-      # now check the result
-      out_sizes = sketch_nodes[inst_config.node_id].inst_groups[inst_config.group_id].output_sizes
-      for i, y_size in enumerate(out_sizes):
-        if y_size == target_size:
-          output_name = 'y_%d_%d_%d' % (inst_config.node_id, inst_config.group_id, i)
-          out.write('if (memcmp(target, {y}, {y_size}*num_tests) == 0) handle_solution(num_evaluated, {v});\n'.format(
-            y=output_name, y_size=bits2bytes(y_size), v=inst_config.node_id
-            ))
+      out.write('}\n') # close the if
 
-      # after we've selected the configs for this node, run the next node
-      if next_node_id is not None:
-        out.write('run_node_%d(num_tests);\n' % next_node_id)
-      else:
-        out.write('num_evaluated += 1;\n')
+      out.write('{node_config_id} -= {num_configs};\n'.format(
+        node_config_id=node_config_id, num_configs=num_configs))
 
-      out.write('}\n' * num_right_braces)
-
-      # deactivate this group
-      out.write('active_%d_%d = 0;\n' % (inst_config.node_id, inst_config.group_id))
-
-    next_node_id = inst_config.node_id
-
-    out.write('}\n') # close the function for this node
+  out.write('}\n') # close run_inst
 
 
-  out.write('void enumerate(int num_tests) { run_node_%d(num_tests); }\n' % next_node_id)
   # FIXME: make this real...
-  out.write('int main() { init(); enumerate(32); } \n')
+  out.write('int main() {\n')
+  out.write('init();\n')
+
+  # allocate device buffers for liveins and target
+  for bufs in outputs.values():
+    for _, var, size in bufs:
+      if var not in livein_names:
+        continue
+      bytes = max(size, 8) // 8
+      out.write('char *%s;\n' % var)
+      out.write('cudaMalloc((void **)&%s, %d);\n' % (var, bytes * 32))
+      out.write('cudaMemcpy({var}, {var}_host, {size}, cudaMemcpyHostToDevice);\n'.format(
+        var=var, size=bytes*32 # FIXME: don't hardcode 32
+        ))
+
+  target_bytes = max(target_size, 8) // 8
+  out.write('char *target;\n')
+  out.write('cudaMalloc((void **)&target, %d);\n' % (target_bytes * 32))
+  out.write('cudaMemcpy(target, target_host, {size}, cudaMemcpyHostToDevice);\n'.format(
+    size=target_bytes * 32 # FIXME: don't hardcode 32
+    ))
+
+  out.write('}\n') # end main
 
 # FIXME: also make it real
 def emit_solution_handler(configs, out):
@@ -342,13 +380,6 @@ def emit_init(target, liveins, out):
 
   out.write('void init() {\n')
   for i in range(32):
-    #a = random.randint(-(1<<16), 1<<16)
-    #b = random.randint(-(1<<16), 1<<16)
-    #soln = max(a,b)
-    #out.write('((int64_t *)x)[%d] = %d;\n' % (i, a))
-    #out.write('((int64_t *)y)[%d] = %d;\n' % (i, b))
-    #out.write('((int64_t *)target)[%d] = %d;\n' % (i, soln))
-
     # generate random input
     inputs = [
       # but use the fixed input val if it's a constant
@@ -360,9 +391,9 @@ def emit_init(target, liveins, out):
     assert z3.is_const(z3_soln)
 
     soln = z3_soln.as_long()
-    emit_assignment('target', target.size(), soln, i, out)
+    emit_assignment('target_host', target.size(), soln, i, out)
     for input, (var, size, _) in zip(inputs, liveins):
-      emit_assignment(var, size, input, i, out)
+      emit_assignment(var+'_host', size, input, i, out)
     
   out.write('}\n')
 
@@ -380,41 +411,6 @@ def p24(x, *_):
   o10 = o9 >> 16
   return o10 + 1 
 
-def emit_inst_runners(sketch_nodes, out, h_out):
-  emitted = set()
-  for n in sketch_nodes.values():
-    if n.inst_groups is None:
-      continue
-
-    for inst_group in n.inst_groups:
-      num_inputs = len(inst_group.input_sizes)
-      num_outputs = len(inst_group.output_sizes)
-      inputs = ['x%d' % i for i in range(num_inputs)]
-      outputs = ['y%d' % i for i in range(num_outputs)]
-
-      for inst in inst_group.insts:
-        if inst in emitted:
-          continue
-        emitted.add(inst)
-        decl = 'int run_{inst}_{imm8}(int num_tests, {params})\n'.format(
-          inst=inst.name, imm8=str(inst.imm8) if inst.imm8 else '0', 
-          params=', '.join('char *__restrict__ '+x for x in (inputs+outputs)),
-          )
-        h_out.write(decl + ';\n')
-        out.write(decl + '{\n')
-
-        # tell the compiler that the arguments are aligned
-        for x in (inputs + outputs):
-          out.write('{x} = __builtin_assume_aligned({x}, 64);\n'.format(x=x))
-
-        out.write('for (int i = 0; i < num_tests; i++) {')
-        out.write(expr_generators[inst.name]('i', inputs, outputs, inst.imm8))
-        out.write('}\n') # end for
-
-        out.write('return 0;\n') # report we didn't encounter div-by-zero
-
-        out.write('}\n') # end function
-
 def emit_everything(target, sketch_graph, sketch_nodes, out):
   '''
   target is an smt formula
@@ -424,39 +420,20 @@ def emit_everything(target, sketch_graph, sketch_nodes, out):
   emit_includes(out)
   out.write('#include "insts.h"\n')
   insts = set()
-  inst_evaluations, liveins, configs = emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out)
+  outputs, inst_evaluations, liveins, configs = emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out)
   emit_init(target, liveins, out)
-  emit_solution_handler(configs, out)
-  emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out)
-
-def emit_insts_lib(out, h_out):
-  for inst, (input_types, _) in sigs.items():
-    has_imm8 = any(ty.is_constant for ty in input_types)
-    if not has_imm8:
-      insts.append(ConcreteInst(inst, imm8=None))
-    else:
-      for imm8 in range(256):
-        insts.append(ConcreteInst(inst, imm8=str(imm8)))
-  _, nodes = make_fully_connected_graph(
-      liveins=[('x', 64), ('y', 64)],
-      constants=[],
-      insts=insts,
-      num_levels=4)
-
-  emit_includes(out)
-  emit_inst_runners(nodes, out, h_out)
+  emit_enumerator(outputs, liveins, target_size, sketch_nodes, inst_evaluations, configs, out)
 
 if __name__ == '__main__':
   import sys
   insts = []
 
-  #with open('insts.c', 'w') as out, open('insts.h', 'w') as h_out:
-  #  emit_insts_lib(out, h_out)
-  #exit()
-
   for inst, (input_types, _) in sigs.items():
-    if '64' not in inst or 'llvm' not in inst:
+    if 'llvm' not in inst:
       continue
+    if sigs[inst][1][0] not in (1, 64, 32):
+      continue
+
     #if sigs[inst][1][0] not in (256, ):
     #  continue
     #if ((sigs[inst][1][0] not in (256,128) or ('epi64' not in inst)) and
@@ -479,15 +456,13 @@ if __name__ == '__main__':
       for imm8 in range(256):
         insts.append(ConcreteInst(inst, imm8=str(imm8)))
 
-  insts = insts[:20] 
-
-  liveins = [('x', 256), ('y', 256)]
-  x, y = z3.BitVecs('x y', 256)
-  target = x * 8
+  liveins = [('x', 64), ('y', 64)]
+  x, y = z3.BitVecs('x y', 64)
+  target = z3.If(x >= y, x, y) * y
 
   g, nodes = make_fully_connected_graph(
       liveins=liveins,
-      constants=[(8,8), (12, 8)],
+      constants=[],
       insts=insts,
       num_levels=4)
   emit_everything(target, g, nodes, sys.stdout)

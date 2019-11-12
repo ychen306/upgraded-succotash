@@ -450,13 +450,15 @@ if __name__ == '__main__':
   import sys
   insts = []
 
-  with open('insts.c', 'w') as out, open('insts.h', 'w') as h_out:
-    emit_insts_lib(out, h_out)
-  exit()
+  #with open('insts.c', 'w') as out, open('insts.h', 'w') as h_out:
+  #  emit_insts_lib(out, h_out)
+  #exit()
 
   for inst, (input_types, _) in sigs.items():
-    if sigs[inst][1][0] not in (256, ):
+    if '64' not in inst or 'llvm' not in inst:
       continue
+    #if sigs[inst][1][0] not in (256, ):
+    #  continue
     #if ((sigs[inst][1][0] not in (256,128) or ('epi64' not in inst)) and
     #    ('llvm' not in inst or '64' not in inst)):
     #  if 'broadcast' not in inst:
@@ -476,6 +478,8 @@ if __name__ == '__main__':
       continue
       for imm8 in range(256):
         insts.append(ConcreteInst(inst, imm8=str(imm8)))
+
+  insts = insts[:20] 
 
   liveins = [('x', 256), ('y', 256)]
   x, y = z3.BitVecs('x y', 256)

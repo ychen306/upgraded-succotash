@@ -24,7 +24,7 @@ def get_int_min(bitwidth):
   return { 8 : -128, 16: -32768, 32: -2147483648, 64: -9223372036854775808 }[bitwidth]
 
 def get_binary_expr_generator(op_syntax, in_bitwidth, out_bitwidth, signed, is_division):
-  def codegen(i, args, results, imm8=None):
+  def codegen(i, args, results, imm8=None, using_gpu=False):
     a, b = args
     [y] = results
 
@@ -32,14 +32,19 @@ def get_binary_expr_generator(op_syntax, in_bitwidth, out_bitwidth, signed, is_d
     out_ty = get_type_name(out_bitwidth, signed=signed)
     a = index_into(a, i, in_ty)
     b = index_into(b, i, in_ty)
-    y = index_into(y, i, out_ty)
+    y = index_into(y, '0' if using_gpu else i, out_ty)
+
+    if using_gpu:
+      handle_div_by_zero = 'return'
+    else: 
+      handle_div_by_zero = 'return 1'
 
     guard_div_by_zero = ''
     if is_division and signed:
-      guard_div_by_zero = 'if ({b} == 0 || ({a} == {int_min} && {b} == -1)) return 1; else'.format(
-          a=a, b=b, int_min=get_int_min(in_bitwidth))
+      guard_div_by_zero = 'if ({b} == 0 || ({a} == {int_min} && {b} == -1)) {handle_div_by_zero}; else'.format(
+          a=a, b=b, int_min=get_int_min(in_bitwidth), handle_div_by_zero=handle_div_by_zero)
     elif is_division and not signed:
-      guard_div_by_zero = 'if ({b} == 0) return 1; else'.format(b=b)
+      guard_div_by_zero = 'if ({b} == 0) {handle_div_by_zero}; else'.format(b=b, handle_div_by_zero=handle_div_by_zero)
     return '{guard_div_by_zero} {y} = {a} {op} {b};'.format(
         guard_div_by_zero=guard_div_by_zero,
         op=op_syntax,
@@ -47,53 +52,53 @@ def get_binary_expr_generator(op_syntax, in_bitwidth, out_bitwidth, signed, is_d
   return codegen
 
 def get_select_generator(bitwidth):
-  def codegen(i, args, results, imm8=None):
+  def codegen(i, args, results, imm8=None, using_gpu=False):
     c, a, b = args
     [y] = results
 
     c = index_into(c, i, get_type_name(1, signed=False))
     a = index_into(a, i, get_type_name(bitwidth, signed=False))
     b = index_into(b, i, get_type_name(bitwidth, signed=False))
-    y = index_into(y, i, get_type_name(bitwidth, signed=False))
+    y = index_into(y, '0' if using_gpu else i, get_type_name(bitwidth, signed=False))
 
     return '{y} = ({c})?{a}:{b};'.format(y=y, c=c, a=a, b=b)
   return codegen
 
 def get_sext_generator(in_bitwidth, out_bitwidth):
-  def codegen(i, args, results, imm8=None):
+  def codegen(i, args, results, imm8=None, using_gpu=False):
     [x] = args
     [y] = results
 
     in_ty = get_type_name(in_bitwidth, signed=True)
     out_ty = get_type_name(out_bitwidth, signed=True)
     x = index_into(x, i, in_ty)
-    y = index_into(y, i, out_ty)
+    y = index_into(y, '0' if using_gpu else i, out_ty)
     
     return '{y} = {x};'.format(x=x, y=y)
   return codegen
 
 def get_zext_generator(in_bitwidth, out_bitwidth):
-  def codegen(i, args, results, imm8=None):
+  def codegen(i, args, results, imm8=None, using_gpu=False):
     [x] = args
     [y] = results
 
     in_ty = get_type_name(in_bitwidth, signed=False)
     out_ty = get_type_name(out_bitwidth, signed=False)
     x = index_into(x, i, in_ty)
-    y = index_into(y, i, out_ty)
+    y = index_into(y, '0' if using_gpu else i, out_ty)
 
     return '{y} = {x};'.format(x=x, y=y)
   return codegen
 
 def get_trunc_generator(in_bitwidth, out_bitwidth):
-  def codegen(i, args, results, imm8=None):
+  def codegen(i, args, results, imm8=None, using_gpu=False):
     [x] = args
     [y] = results
 
     in_ty = get_type_name(in_bitwidth, signed=False)
     out_ty = get_type_name(out_bitwidth, signed=False)
     x = index_into(x, i, in_ty)
-    y = index_into(y, i, out_ty)
+    y = index_into(y, '0' if using_gpu else i, out_ty)
 
     return '{y} = {x};'.format(x=x, y=y)
   return codegen
@@ -177,7 +182,7 @@ def get_intrinsic_generator(spec):
       param_ids.append(param_id)
       in_param_types.append(param.type.strip())
 
-  def codegen(i, args, results, imm8=None):
+  def codegen(i, args, results, imm8=None, using_gpu=False):
     params = []
     for param_id in param_ids:
       if param_id.is_constant:
@@ -188,11 +193,11 @@ def get_intrinsic_generator(spec):
         params.append(index_into(args[param_id.idx], i, param_type))
       else:
         param_type = out_param_types[param_id.idx - (1 if has_explicit_retval else 0)]
-        params.append(address_of(index_into(args[param_id.idx], i, param_type)))
+        params.append(address_of(index_into(args[param_id.idx], '0' if using_gpu else i, param_type)))
 
     call = '%s(%s);' % (spec.intrin, ', '.join(params))
     if has_explicit_retval:
-      call = '%s = %s' % (index_into(results[0], i, spec.rettype), call)
+      call = '%s = %s' % (index_into(results[0], '0' if using_gpu else i, spec.rettype), call)
     return call
 
   return codegen

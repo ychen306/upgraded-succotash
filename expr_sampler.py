@@ -134,7 +134,7 @@ def sample_expr(rounds):
   e, insts = sample_expr_with_inputs((out_size,), rounds, sigs, semas, categories, live_ins=inputs)
   return e, insts, inputs
 
-def gen_expr(*args):
+def gen_expr(rounds, *args):
   while True:
     try:
       e, insts, liveins = sample_expr(5)
