@@ -17,7 +17,7 @@ constant_pool = list(zip(constants, itertools.repeat(8)))
 InstGroup = namedtuple('InstGroup', ['insts', 'input_sizes', 'output_sizes'])
 SketchNode = namedtuple('SketchNode', ['inst_groups', 'var', 'var_size', 'const_val'])
 ConcreteInst = namedtuple('ConcreteInst', ['name', 'imm8'])
-ArgConfig = namedtuple('ArgConfig', ['name', 'options'])
+ArgConfig = namedtuple('ArgConfig', ['name', 'options', 'switch'])
 InstConfig = namedtuple('InstConfig', ['name', 'node_id', 'group_id', 'options', 'args'])
 
 def create_inst_node(inst_groups):
@@ -106,20 +106,22 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
             break
 
           x = 'x%i' % i
-          out.write('char *%s;\n' % x)
-          arg_config = 'arg_%d_%d_%d' % (v, group_id, i)
-          out.write('switch (%s) {\n' % arg_config)
-          for j, (w, group_id2, var_to_use, _) in enumerate(usable_outputs):
-            # bail if the group whose output we are using is not active
-            guard_inactive_input = 'if (!active_{w}_{group_id}) continue;'.format(w=w, group_id=group_id2)
-            if sketch_nodes[w].inst_groups is None:
-              # w is one of the livens so always active:
-              guard_inactive_input = ''
-            out.write('case {j}: {guard_inactive_input} x{i} = {var_to_use}; break;\n'.format(
-              j=j, i=i, var_to_use=var_to_use, guard_inactive_input=guard_inactive_input))
-          out.write('}\n') # end switch
+          with io.StringIO() as switch_buf:
+            switch_buf.write('char *%s;\n' % x)
+            arg_config = 'arg_%d_%d_%d' % (v, group_id, i)
+            switch_buf.write('switch (%s) {\n' % arg_config)
+            for j, (w, group_id2, var_to_use, _) in enumerate(usable_outputs):
+              # bail if the group whose output we are using is not active
+              guard_inactive_input = 'if (!active_{w}_{group_id}) continue;'.format(w=w, group_id=group_id2)
+              if sketch_nodes[w].inst_groups is None:
+                # w is one of the livens so always active:
+                guard_inactive_input = ''
+              switch_buf.write('case {j}: {guard_inactive_input} x{i} = {var_to_use}; break;\n'.format(
+                j=j, i=i, var_to_use=var_to_use, guard_inactive_input=guard_inactive_input))
+            switch_buf.write('}\n') # end switch
+            switch = switch_buf.getvalue()
 
-          arg_configs.append(ArgConfig(arg_config, usable_outputs))
+          arg_configs.append(ArgConfig(arg_config, usable_outputs, switch))
 
         # move on if we can statically show that this group never has usable values
         if inst_group_inactive:
@@ -204,14 +206,15 @@ def emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out):
 
       # remember the number of right braces we need to close
       num_right_braces = 1
-      out.write('for ({op} = 0; {op} < {options}; {op}++) {{\n'.format(
-        op=inst_config.name, options=len(inst_config.options)))
-
 
       for arg in inst_config.args:
         out.write('for ({arg} = 0; {arg} < {options}; {arg}++) {{\n'.format(
           arg=arg.name, options=len(arg.options)))
+        out.write(arg.switch)
         num_right_braces += 1
+
+      out.write('for ({op} = 0; {op} < {options}; {op}++) {{\n'.format(
+        op=inst_config.name, options=len(inst_config.options)))
 
       # evaluate the inst once we've fixed its configs
       out.write(inst_eval)
@@ -479,10 +482,8 @@ if __name__ == '__main__':
       for imm8 in range(256):
         insts.append(ConcreteInst(inst, imm8=str(imm8)))
 
-  insts = insts[:20] 
-
-  liveins = [('x', 256), ('y', 256)]
-  x, y = z3.BitVecs('x y', 256)
+  liveins = [('x', 64), ('y', 64)]
+  x, y = z3.BitVecs('x y', 64)
   target = x * 8
 
   g, nodes = make_fully_connected_graph(
