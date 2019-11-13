@@ -7,10 +7,12 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.autograd import Variable
 from torch.utils.data import DataLoader
+from torch.distributions import Multinomial
 from expr_sampler import sample_expr, semas
 from dgl.nn.pytorch.conv import GatedGraphConv, GINConv
 from dgl import DGLGraph
 from tqdm import tqdm
+import json
 
 import z3
 from z3_utils import get_z3_app
@@ -113,50 +115,43 @@ def expr2graph(serialized_expr):
   return g, g_inv, torch.LongTensor(ops), [torch.LongTensor(p) for p in params], torch.LongTensor(expr_ids)
 
 def mean(xs):
-  return sum(xs) / len(xs)
+  return float(sum(xs)) / float(len(xs))
 
 def validate(model, data):
   '''
   run model through data and get average precision and recall
   '''
-  precisions = []
   recalls = []
   with torch.no_grad():
-    for g, ops, params, inst_ids, _ in data:
-      pred = model(g, ops, params)
-      recall, prec = get_precision_and_recall(pred, inst_ids)
+    for g, g_inv, ops, params, inst_ids in data:
+      pred = model(g, g_inv, ops, params)
+      recall = get_recalled(pred.softmax(dim=0), inst_ids)
       recalls.append(recall)
-      precisions.append(prec)
-  return mean(precisions), mean(recalls)
+  return mean(recalls)
 
-def train(model, data, validator, batch_size=4, epochs=10):
+def train(model, data, validator, num_insts, batch_size=4, epochs=10):
   ids = list(range(len(data)))
   dl = DataLoader(ids, batch_size=batch_size, shuffle=True)
-  criterion = nn.BCELoss(reduction='none')
   #optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
   optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
   for epoch in range(epochs):
     pbar = tqdm(dl)
     for batch in pbar:
-      preds = []
-      targets = []
       recalls = []
-      precisions = []
-      weights = []
+      log_probs = []
       for i in batch:
-        g, ops, params, inst_ids, w = data[i]
-        weights.append(w)
-        pred = model(g, ops, params)
-        preds.append(pred)
-        recall, prec = get_precision_and_recall(pred, inst_ids)
-        recalls.append(recall)
-        precisions.append(prec)
-        targets.append(inst_ids)
-      preds = torch.stack(preds)
-      targets = torch.stack(targets)
-      loss = criterion(preds, targets).reshape(-1).dot(torch.cat(weights))
-      pbar.set_description('loss: %.5f, recall: %.5f, precision: %.5f' % (loss, mean(recalls), mean(precisions)))
+        g, g_inv, ops, params, inst_ids = data[i]
+        logits = model(g, g_inv, ops, params)
+        probs = logits.softmax(dim=0)
+        inst_dist = Multinomial(int(inst_ids.sum()), probs)
+        log_probs.append(inst_dist.log_prob(inst_ids.float()))
+        sample = torch.zeros(num_insts)
+        recalled = get_recalled(probs, inst_ids)
+        recalls.append(recalled)
+
+      loss = -torch.stack(log_probs).mean()
+      pbar.set_description('loss: %.5f, recall: %.5f' % (loss, mean(recalls)))
 
       optimizer.zero_grad()
       loss.backward()
@@ -164,10 +159,8 @@ def train(model, data, validator, batch_size=4, epochs=10):
       optimizer.step()
 
     torch.save(model.state_dict(), 'sema2insts.model')
-    precision, recall = validator(model)
-    print('Epoch:', epoch,
-        'precision:', precision,
-        'recall:', recall)
+    recall = validator(model)
+    print('Epoch:', epoch, 'recall:', recall)
 
 def unpack(ids, num_elems):
   x = torch.zeros(num_elems)
@@ -175,9 +168,13 @@ def unpack(ids, num_elems):
     x[i] = 1
   return x
 
-insts2ids = { inst : i for i, inst in enumerate(semas) }
-num_insts = len(insts2ids)
-ids2insts = [inst for inst in semas]
+inst_pool = []
+with open('instantiated-insts.json') as f:
+  for inst, imm8 in json.load(f):
+    inst_pool.append((inst, imm8))
+
+num_insts = len(inst_pool)
+insts2ids = { inst : i for i, inst in enumerate(inst_pool) }
 
 def load_data(expr_generator, n):
   '''
@@ -185,43 +182,27 @@ def load_data(expr_generator, n):
   '''
   data = []
   print('generating expressions')
-  for _ in tqdm(range(n)):
+  for _ in range(n):
     e, insts = expr_generator()
     g, g_inv, ops, params, _ = expr2graph(e)
-    inst_ids = unpack([insts2ids[i] for i in insts], num_insts)
-    weights = torch.tensor([num_insts/len(insts) if x==1 else 1 for x in inst_ids])
-    weights.div_(weights.sum())
-    data.append((g, ops, params, inst_ids, weights))
+    inst_ids = unpack([insts2ids[inst,imm8] for inst, imm8 in insts], num_insts)
+    data.append((g, g_inv, ops, params, inst_ids.long()))
   return data
 
-def get_precision_and_recall(predicted, actual):
-  '''
-  return recall and precision
-  '''
-  tp = ((predicted > 0.5) & (actual > 0.5)).sum()
-  tn = ((predicted < 0.5) & (actual < 0.5)).sum()
-  fp = ((predicted > 0.5) & (actual < 0.5)).sum()
-  fn = ((predicted < 0.5) & (actual > 0.5)).sum()
-  if int(tp + fn) == 0:
-    recall = 1
-  else:
-    recall = float(tp) / float(tp + fn)
-  if int(tp + fp) == 0:
-    precision = 1
-  else:
-    precision = float(tp) / float(tp + fp)
-  return recall, precision
+def get_recalled(predicted, actual):
+  _, top20 = predicted.topk(30)
+  return actual[top20].sum() / actual.sum()
 
 def sema2insts(model, e, accept=lambda p: p > 0.5):
   g, g_inv, ops, params = expr2graph(serialize_expr(e))
   pred = model(g, ops, params)
   return [(ids2insts[i], float(p)) for i, p in enumerate(pred.reshape(-1)) if accept(p)]
 
-num_train = 1000000
+num_train = 400000
 num_test = 1000
 
-num_train = 100
-num_test = 100
+#num_train = 1000
+#num_test = 100
 
 epochs = 20
 gen_new_expr = False
@@ -235,11 +216,9 @@ if __name__ == '__main__':
   with open('exprs.json') as f:
     print('Loading serialized expressions')
     n = num_train + num_test
-    pbar = iter(tqdm(range(n)))
     serialized_data = []
     for line in f:
       serialized_data.append(json.loads(line))
-      next(pbar)
       if len(serialized_data) >= n:
         break
   
@@ -247,4 +226,4 @@ if __name__ == '__main__':
   data = load_data(load_one_expr, num_train)
   test_data = load_data(load_one_expr, num_test)
   validator = lambda model: validate(model, test_data)
-  train(model, data, validator=validator, epochs=epochs)
+  train(model, data, num_insts=num_insts, validator=validator, epochs=epochs)
