@@ -24,17 +24,28 @@ llvm_insts = [inst for inst in sigs.keys() if inst.startswith('llvm')]
 job_queue = multiprocessing.Queue()
 result_queue = multiprocessing.Queue()
 
-def synthesize(insts, target, liveins, timeout=5):
+def synthesize(insts, target, liveins, timeout=5, num_levels=4, test_inputs={}):
   g, nodes = make_fully_connected_graph(
       liveins=liveins,
       insts=[ConcreteInst(inst, imm8=imm8) for inst, imm8 in insts],
-      num_levels=4)
-  with NamedTemporaryFile(mode='w', suffix='.c') as f, NamedTemporaryFile() as exe:
-    emit_everything(target, g, nodes, f)
-    f.flush()
-    subprocess.check_output('cc %s insts.o -o %s -I. 2>/dev/null' % (f.name, exe.name), shell=True)
-    p = subprocess.Popen(['timeout', str(timeout), exe.name], stdout=subprocess.PIPE)
-    return p.stdout.read()
+      num_levels=num_levels)
+  exe = NamedTemporaryFile(delete=False)
+  f = NamedTemporaryFile(mode='w', suffix='.c')
+  exe.close()
+
+  emit_everything(target, g, nodes, f, test_inputs=test_inputs)
+  f.flush()
+  os.system('cp %s t.c' % f.name)
+
+  subprocess.check_output('cc %s insts.o -o %s -I. 2>/dev/null' % (f.name, exe.name), shell=True)
+  p = subprocess.Popen(['timeout', str(timeout), exe.name], stdout=subprocess.PIPE)
+  out = ''
+  for _ in range(5):
+    out = out + p.stdout.readline().decode('utf-8')
+  f.close()
+  if os.path.exists(f.name):
+    os.remove(f.name)
+  return out
 
 def check_synth_batched(insts_batch, target, liveins, timeout=5):
   batch_size = len(insts_batch)
@@ -131,7 +142,7 @@ if __name__ == '__main__':
 
   model = Sema2Insts(num_insts)
   try:
-    model.load_state_dict(torch.load('synth.model'))
+    model.load_state_dict(torch.load('sema2insts.model'))
   except:
     print('Failed to reload model state')
 

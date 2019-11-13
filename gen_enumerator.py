@@ -339,7 +339,7 @@ def emit_assignment(var, bitwidth, val, i, out):
       ))
     val >>= 8
 
-def emit_init(target, liveins, out):
+def emit_init(target, liveins, out, test_inputs={}):
   import random
   vars = [z3.BitVec(var, size) for var, size, _ in liveins]
 
@@ -353,10 +353,20 @@ def emit_init(target, liveins, out):
     #out.write('((int64_t *)target)[%d] = %d;\n' % (i, soln))
 
     # generate random input
-    inputs = [
-      # but use the fixed input val if it's a constant
-      const_val if const_val is not None else random.randint(0, (1<<size)-1)
-      for _, size, const_val in liveins]
+    #inputs = [
+    #  # but use the fixed input val if it's a constant
+    #  const_val if const_val is not None else random.randint(0, (1<<size)-1)
+    #  for _, size, const_val in liveins]
+    inputs = []
+    for var, size, const_val in liveins:
+      if const_val is not None:
+        inputs.append(const_val)
+      else:
+        counter_examples = test_inputs.get(var, [])
+        if i < len(counter_examples):
+          inputs.append(counter_examples[i])
+        else:
+          inputs.append(random.randint(0, (1<<size)-1))
 
     z3_inputs = [z3.BitVecVal(val, size) for val, (_, size, _) in zip(inputs, liveins)]
     z3_soln = z3.simplify(z3.substitute(target, *zip(vars, z3_inputs)))
@@ -418,7 +428,7 @@ def emit_inst_runners(sketch_nodes, out, h_out):
 
         out.write('}\n') # end function
 
-def emit_everything(target, sketch_graph, sketch_nodes, out):
+def emit_everything(target, sketch_graph, sketch_nodes, out, test_inputs={}):
   '''
   target is an smt formula
   '''
@@ -428,7 +438,7 @@ def emit_everything(target, sketch_graph, sketch_nodes, out):
   out.write('#include "insts.h"\n')
   insts = set()
   inst_evaluations, liveins, configs = emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out)
-  emit_init(target, liveins, out)
+  emit_init(target, liveins, out, test_inputs=test_inputs)
   emit_solution_handler(configs, out)
   emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out)
 
