@@ -70,8 +70,8 @@ p20 = o3 | o6 # no solution
 liveins = [('x', 32)]
 
 #liveins = [('x', 32), ('y', 32)]
-#liveins = [('x', 32), ('y', 32), ('z', 32)]
-#target = p19_impl(x, y, z)
+liveins = [('x', 32), ('y', 32), ('z', 32)]
+target = p19_impl(x, y, z)
 
 target = p20
 
@@ -80,8 +80,8 @@ target = z3.simplify(target)
 #ranges = {'z': (0, 32), 'x': (-10,10) }
 #counter_examples = {'x': [0] }
 counter_examples = {'x': [1<<3, 0b101 << 3, 1<<4, 1<<31, 1<<15, 1<<11, 0b11 << 23, 0b101 << 15] }
-counter_examples = {'z': list(range(32)) }
 counter_examples = {}
+counter_examples = {'z': list(range(32)) }
 
 target_serialized = serialize_expr(target)
 g, g_inv, ops, params, _ = expr2graph(target_serialized)
@@ -94,7 +94,7 @@ insts = [(inst, None) for inst in sigs if '32' in inst and 'llvm' in inst and 'T
 print(insts)
 random.shuffle(insts)
 begin = time()
-out = synthesize(insts, target, liveins, timeout=1000, num_levels=7, test_inputs=counter_examples)
+out = synthesize(insts, target, liveins, timeout=60 * 60, num_levels=7, test_inputs=counter_examples)
 end = time()
 
 print(out)

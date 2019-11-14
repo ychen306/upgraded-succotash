@@ -24,10 +24,11 @@ llvm_insts = [inst for inst in sigs.keys() if inst.startswith('llvm')]
 job_queue = multiprocessing.Queue()
 result_queue = multiprocessing.Queue()
 
-def synthesize(insts, target, liveins, timeout=5, num_levels=4, test_inputs={}):
+def synthesize(insts, target, liveins, timeout=5, num_levels=4, test_inputs={}, constants=[]):
   g, nodes = make_fully_connected_graph(
       liveins=liveins,
       insts=[ConcreteInst(inst, imm8=imm8) for inst, imm8 in insts],
+      constants = constants,
       num_levels=num_levels)
   exe = NamedTemporaryFile(delete=False)
   f = NamedTemporaryFile(mode='w', suffix='.c')
