@@ -6,6 +6,7 @@ from expr_sampler import sigs
 import sys
 
 import z3
+import json
 
 def debug(*args):
   print(*args, file=sys.stderr)
@@ -19,6 +20,9 @@ SketchNode = namedtuple('SketchNode', ['inst_groups', 'var', 'var_size', 'const_
 ConcreteInst = namedtuple('ConcreteInst', ['name', 'imm8'])
 ArgConfig = namedtuple('ArgConfig', ['name', 'options', 'switch'])
 InstConfig = namedtuple('InstConfig', ['name', 'node_id', 'group_id', 'options', 'args'])
+
+with open('commutative-params.json') as f:
+  commutative_params = json.load(f)
 
 def create_inst_node(inst_groups):
   return SketchNode(inst_groups, None, None, None)
@@ -35,14 +39,6 @@ def bits2bytes(bits):
 def get_usable_inputs(input_size, sketch_graph, sketch_nodes, outputs, v):
   usable_inputs = []
   for w in sketch_graph[v]:
-    ## dead node, bail!
-    #if len(outputs[w]) == 0:
-    #  continue
-    #for i, size in enumerate(sketch_nodes[w].output_sizes):
-    #  if size == input_size:
-    #    # we can use the i'th output of w
-    #    input_idxs.append((w, i))
-
     for group_id, output, size in outputs[w]:
       if size == input_size:
         # FIXME: use a namedtuple
@@ -142,6 +138,15 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
         inputs = ['x%d'%i for i in range(num_inputs)]
         for i, inst in enumerate(inst_group.insts):
           out.write('case %d: {\n' % i)
+
+          # for each pair of p1,p2 parameters that commute
+          #    enforce the constraint that p2 >= p1
+          commutative_pairs = commutative_params.get(inst.name, [])
+          for p1, p2 in commutative_pairs:
+            p1_config = arg_configs[p1].name
+            p2_config = arg_configs[p2].name
+            out.write('if ({p2} < {p1}) continue;\n'.format(p1=p1_config, p2=p2_config))
+
           out.write('div_by_zero = run_{inst}_{imm8}(num_tests, {args});\n'.format(
             inst=inst.name, args=', '.join(inputs + v_outputs), imm8=str(inst.imm8) if inst.imm8 else '0'))
           out.write('} break;\n') # end case
@@ -502,6 +507,8 @@ if __name__ == '__main__':
 
   for inst, (input_types, _) in sigs.items():
     if '64' not in inst or 'llvm' not in inst:
+      continue
+    if 'Div' in inst or 'Rem' in inst:
       continue
     #if sigs[inst][1][0] not in (256, ):
     #  continue
