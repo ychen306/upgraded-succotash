@@ -2,7 +2,17 @@ from gen_enumerator import *
 import json
 
 def emit_insts_lib(out, h_out):
-  insts = []
+  insts = [
+      ConcreteInst('ehad', None),
+      ConcreteInst('arba', None),
+      ConcreteInst('shesh', None),
+      ConcreteInst('smol', None),
+      ConcreteInst('im', None),
+      ConcreteInst('bvnot', None),
+      ConcreteInst('bvnot32', None),
+      ConcreteInst('bvneg', None),
+      ]
+
   with open('instantiated-insts.json') as f:
     for inst, imm8 in json.load(f):
       insts.append(ConcreteInst(inst, imm8))

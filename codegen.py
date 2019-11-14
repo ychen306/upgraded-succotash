@@ -10,6 +10,8 @@ import itertools
 # mapping <instrinsic name> -> <inputs, outputs> -> <string representing computation>
 expr_generators = {}
 
+include_bv_ops = True
+
 def get_type_name(bitwidth, signed):
   if bitwidth < 8:
     assert bitwidth == 1
@@ -21,6 +23,76 @@ def index_into(xs, i, ty):
 
 def address_of(x):
   return '&' + x;
+
+if include_bv_ops:
+  uint64_t = 'uint64_t'
+  uint32_t = 'uint32_t'
+
+  def ehad(i, args, results, *_):
+    [x] = args
+    [y] = results
+    return '{y} = {x} >> 1;'.format(
+        x=index_into(x, i, uint64_t), y=index_into(y, i, uint64_t))
+
+  def arba(i, args, results, *_):
+    [x] = args
+    [y] = results
+    return '{y} = {x} >> 4;'.format(
+        x=index_into(x, i, uint64_t), y=index_into(y, i, uint64_t))
+
+  def shesh(i, args, results, *_):
+    [x] = args
+    [y] = results
+    return '{y} = {x} >> 16;'.format(
+        x=index_into(x, i, uint64_t), y=index_into(y, i, uint64_t))
+
+  def smol(i, args, results, *_):
+    [x] = args
+    [y] = results
+    return '{y} = {x} << 1;'.format(
+        x=index_into(x, i, uint64_t), y=index_into(y, i, uint64_t))
+
+  def smol(i, args, results, *_):
+    [x] = args
+    [y] = results
+    return '{y} = {x} << 1;'.format(
+        x=index_into(x, i, uint64_t), y=index_into(y, i, uint64_t))
+
+  def im(i, args, results, *_):
+    x, y, z = args
+    [out] = results
+    return '{out} = ({x} == 1) ? {y} : {z};'.format(
+        out=index_into(out, i, uint64_t),
+        x=index_into(x,i,uint64_t), y=index_into(y,i,uint64_t),
+        z=index_into(z,i,uint64_t))
+
+  def bvnot(i, args, results, *_):
+    [x] = args
+    [y] = results
+    return '{y} = ~{x};'.format(
+        x=index_into(x, i, uint64_t), y=index_into(y, i, uint64_t))
+
+  def bvnot32(i, args, results, *_):
+    [x] = args
+    [y] = results
+    return '{y} = ~{x};'.format(
+        x=index_into(x, i, uint32_t), y=index_into(y, i, uint32_t))
+
+  def bvneg(i, args, results, *_):
+    [x] = args
+    [y] = results
+    return '{y} = -{x};'.format(
+        x=index_into(x, i, uint32_t), y=index_into(y, i, uint32_t))
+
+  expr_generators['ehad'] = ehad
+  expr_generators['arba'] = arba
+  expr_generators['shesh'] = shesh
+  expr_generators['smol'] = smol
+  expr_generators['im'] = im
+  expr_generators['bvnot'] = bvnot
+  expr_generators['bvnot32'] = bvnot32
+  expr_generators['bvneg'] = bvneg
+
 
 def get_int_min(bitwidth):
   return { 8 : -128, 16: -32768, 32: -2147483648, 64: -9223372036854775808 }[bitwidth]

@@ -12,6 +12,21 @@ semas = {}
 
 ignore_intrinsics = False
 
+include_bv_ops = True
+
+
+if include_bv_ops:
+  x, y, z = z3.BitVecs('pre_x pre_y pre_z', 64)
+  x32 = z3.BitVec('bv_x_32', 32)
+  semas['ehad'] = (x,), (z3.LShR(x, 1),)
+  semas['arba'] = (x,), (z3.LShR(x, 4),)
+  semas['shesh'] = (x,), (z3.LShR(x, 16),)
+  semas['smol'] = (x,), (x << 1,)
+  semas['im'] = (x,y,z), (z3.If(x==1, y, z),)
+  semas['bvnot'] = (x,), (~x,)
+  semas['bvnot32'] = (x32,), (~x32,)
+  semas['bvneg'] = (x32,), (-x32,)
+
 # get semantics of intrinsics
 with open('intrinsics.avx2.sema') as sema_f:
   while not ignore_intrinsics:

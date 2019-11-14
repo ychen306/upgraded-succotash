@@ -139,6 +139,7 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
         for i, inst in enumerate(inst_group.insts):
           out.write('case %d: {\n' % i)
 
+
           # for each pair of p1,p2 parameters that commute
           #    enforce the constraint that p2 >= p1
           commutative_pairs = commutative_params.get(inst.name, [])
@@ -254,7 +255,7 @@ def emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out):
 
   out.write('void enumerate(int num_tests) { run_node_%d(num_tests); }\n' % next_node_id)
   # FIXME: make this real...
-  out.write('int main() { init(); enumerate(32); } \n')
+  out.write('int main() { init(); enumerate(10); } \n')
 
 # FIXME: also make it real
 def emit_solution_handler(configs, out):
@@ -425,11 +426,14 @@ def emit_init(target, liveins, out, test_inputs={}):
         else:
           inputs.append(random.randint(0, (1<<size)-1))
 
-    z3_inputs = [z3.BitVecVal(val, size) for val, (_, size, _) in zip(inputs, liveins)]
-    z3_soln = z3.simplify(z3.substitute(target, *zip(vars, z3_inputs)))
-    assert z3.is_const(z3_soln)
+    if i < len(test_inputs.get('target', [])):
+      soln = test_inputs['target'][i]
+    else:
+      z3_inputs = [z3.BitVecVal(val, size) for val, (_, size, _) in zip(inputs, liveins)]
+      z3_soln = z3.simplify(z3.substitute(target, *zip(vars, z3_inputs)))
+      assert z3.is_const(z3_soln)
+      soln = z3_soln.as_long()
 
-    soln = z3_soln.as_long()
     emit_assignment('target', target.size(), soln, i, out)
     for input, (var, size, _) in zip(inputs, liveins):
       emit_assignment(var, size, input, i, out)
@@ -506,8 +510,10 @@ if __name__ == '__main__':
   insts = []
 
   for inst, (input_types, _) in sigs.items():
-    if '64' not in inst or 'llvm' not in inst:
+    if 'llvm' not in inst:
       continue
+    #if '32' not in inst or 'llvm' not in inst:
+    #  continue
     if 'Div' in inst or 'Rem' in inst:
       continue
     #if sigs[inst][1][0] not in (256, ):
@@ -532,9 +538,9 @@ if __name__ == '__main__':
       for imm8 in range(256):
         insts.append(ConcreteInst(inst, imm8=str(imm8)))
 
-  liveins = [('x', 64), ('y', 64)]
-  x, y = z3.BitVecs('x y', 64)
-  target = x * 8
+  liveins = [('x', 32), ('y', 32)]
+  x, y = z3.BitVecs('x y', 32)
+  target = x % y
 
   g, nodes = make_fully_connected_graph(
       liveins=liveins,
