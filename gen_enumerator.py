@@ -276,6 +276,55 @@ def emit_solution_handler(configs, out):
 
   out.write('}\n') # end func
 
+def prune_graph(target_size, sketch_graph, sketch_nodes):
+  # do top sort
+  sorted_nodes = []
+  visited = set()
+  def topsort(v):
+    if v in visited:
+      return
+    visited.add(v)
+
+    is_leaf = v not in sketch_graph
+    if is_leaf:
+      sorted_nodes.append(v)
+      return
+
+    for w in sketch_graph[v]:
+      topsort(w)
+
+    sorted_nodes.append(v)
+
+  for v in sketch_graph:
+    topsort(v)
+
+  # after this the src nodes of the dep graph will show up first
+  sorted_nodes.reverse()
+
+  # mapping nodes -> users
+  users = defaultdict(list)
+  for v in sorted_nodes:
+    is_leaf = v not in sketch_graph
+    # nothing to prune
+    if is_leaf:
+      continue
+
+    # the target output is always useful
+    useful_bitwidths = {target_size}
+    # figure out outputs that are potentially useful
+    for u in users[v]:
+      for inst_group in sketch_nodes[u].inst_groups:
+        for bitwidth in inst_group.input_sizes:
+          useful_bitwidths.add(bitwidth)
+    # drop an inst group if none of its output produce useful bitwidths
+    filtered_groups = [inst_group
+        for inst_group in sketch_nodes[v].inst_groups
+        if any(bw in useful_bitwidths for bw in inst_group.output_sizes)]
+    debug('DROPPED', len(sketch_nodes[v].inst_groups) - len(filtered_groups), 'NODES')
+    sketch_nodes[v].inst_groups[:] = filtered_groups
+    for w in sketch_graph[v]:
+      users[w].append(v)
+
 def make_fully_connected_graph(liveins, insts, num_levels, constants=constant_pool):
   # categorize the instructions by their signature first
   sig2insts = defaultdict(list)
@@ -433,6 +482,8 @@ def emit_everything(target, sketch_graph, sketch_nodes, out, test_inputs={}):
   target is an smt formula
   '''
   target_size = target.size()
+
+  prune_graph(target_size, sketch_graph, sketch_nodes)
 
   emit_includes(out)
   out.write('#include "insts.h"\n')
