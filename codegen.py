@@ -11,7 +11,9 @@ import itertools
 expr_generators = {}
 
 def get_type_name(bitwidth, signed):
-  bitwidth = max(8, bitwidth)
+  if bitwidth < 8:
+    assert bitwidth == 1
+    bitwidth = 32
   return '%sint%d_t' % ('' if signed else 'u', bitwidth)
 
 def index_into(xs, i, ty):

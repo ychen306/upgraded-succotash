@@ -27,7 +27,10 @@ def create_var_node(var, size, const_val=None):
   return SketchNode(None, var, size, const_val)
 
 def bits2bytes(bits):
-  return max(bits, 8) // 8
+  if bits < 8:
+    assert bits == 1
+    return 4
+  return bits // 8
 
 def get_usable_inputs(input_size, sketch_graph, sketch_nodes, outputs, v):
   usable_inputs = []
@@ -164,10 +167,10 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
   # allocate the buffers storing the variables/temporaries
   for bufs in outputs.values():
     for _, var, size in bufs:
-      bytes = max(size, 8) // 8
+      bytes = bits2bytes(size)
       out.write('static char %s[%d] __attribute__ ((aligned (64)));\n' % (var, bytes * max_tests))
   # also allocate the variable storing the targets
-  target_bytes = max(target_size, 8) // 8
+  target_bytes = bits2bytes(target_size)
   out.write('static char target[%d];\n' % (target_bytes * max_tests))
 
   # declare the configs as global variable
@@ -380,7 +383,7 @@ def make_fully_connected_graph(liveins, insts, num_levels, constants=constant_po
 
 def emit_assignment(var, bitwidth, val, i, out):
   mask = 255
-  num_bytes = max(bitwidth, 8) // 8
+  num_bytes = bits2bytes(bitwidth)
   for j in range(num_bytes):
     byte = val & mask
     out.write('((uint8_t *){var})[{i} * {num_bytes} + {j}] = {byte};\n'.format(
@@ -493,30 +496,9 @@ def emit_everything(target, sketch_graph, sketch_nodes, out, test_inputs={}):
   emit_solution_handler(configs, out)
   emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out)
 
-def emit_insts_lib(out, h_out):
-  for inst, (input_types, _) in sigs.items():
-    has_imm8 = any(ty.is_constant for ty in input_types)
-    if not has_imm8:
-      insts.append(ConcreteInst(inst, imm8=None))
-    else:
-      for imm8 in range(256):
-        insts.append(ConcreteInst(inst, imm8=str(imm8)))
-  _, nodes = make_fully_connected_graph(
-      liveins=[('x', 64), ('y', 64)],
-      constants=[],
-      insts=insts,
-      num_levels=4)
-
-  emit_includes(out)
-  emit_inst_runners(nodes, out, h_out)
-
 if __name__ == '__main__':
   import sys
   insts = []
-
-  #with open('insts.c', 'w') as out, open('insts.h', 'w') as h_out:
-  #  emit_insts_lib(out, h_out)
-  #exit()
 
   for inst, (input_types, _) in sigs.items():
     if '64' not in inst or 'llvm' not in inst:
