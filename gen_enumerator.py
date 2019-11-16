@@ -509,14 +509,14 @@ if __name__ == '__main__':
   import sys
   insts = []
 
-  bw = 256
+  bw = 64
 
   for inst, (input_types, _) in sigs.items():
-    if sigs[inst][1][0] != 256:
-      continue
-
-    #if str(bw) not in inst or 'llvm' not in inst:
+    #if sigs[inst][1][0] != 256:
     #  continue
+
+    if str(bw) not in inst or 'llvm' not in inst:
+      continue
 
     #if 'Div' in inst or 'Rem' in inst:
     #  continue
