@@ -63,6 +63,9 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
   configs = []
   liveins = []
 
+  # mapping <node_id, group_id, output_idx> -> <buffer name>
+  out_buffers = {}
+
   def visit(v):
     if v in visited:
       return
@@ -80,6 +83,31 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
 
     for w in sketch_graph[v]:
       visit(w)
+
+    # mapping <output bw> -> <maximum number buffers of bw that can be alive>
+    buf_counters = defaultdict(int)
+
+    # scan all of the groups within the node can decide how to allocate buffers
+    # because only one group can be active at any given time, we can share some of the buffers
+    for group_id, inst_group in enumerate(sketch_nodes[v].inst_groups):
+      group_counters = defaultdict(int)
+      for out_bw in inst_group.output_sizes:
+        group_counters[out_bw] += 1
+      for out_bw, group_count in group_counters.items():
+        buf_counters[out_bw] = max(buf_counters[out_bw], group_count)
+
+    for group_id, inst_group in enumerate(sketch_nodes[v].inst_groups):
+      group_counters = defaultdict(int)
+      for out_id, out_bw in enumerate(inst_group.output_sizes):
+        group_counters[out_bw] += 1
+        buf_name = 'y_{size}_{node_id}_{group_id}_{counter}'.format(
+            size=out_bw,
+            node_id=v,
+            group_id=group_id,
+            counter=group_counters[out_bw])
+        out_buffers[v, group_id, out_id] = buf_name
+
+    # now we know how much space we need, name them
 
     node_evals = []
     node_configs = []
@@ -126,7 +154,7 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
         if inst_group_inactive:
           continue
 
-        v_outputs = ['y_%d_%d_%d'%(v, group_id, i) for i in range(num_outputs)]
+        v_outputs = [out_buffers[v, group_id, i] for i in range(num_outputs)]
         arg_list = ['x%d'%i for i in range(num_inputs)] + [y for y in v_outputs]
           
         num_insts = len(inst_group.insts)
@@ -171,8 +199,12 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
       visit(v)
 
   # allocate the buffers storing the variables/temporaries
+  allocated = set()
   for bufs in outputs.values():
     for _, var, size in bufs:
+      if var in allocated:
+        continue
+      allocated.add(var)
       bytes = bits2bytes(size)
       out.write('static char %s[%d] __attribute__ ((aligned (64)));\n' % (var, bytes * max_tests))
   # also allocate the variable storing the targets
@@ -188,7 +220,7 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
         out.write('static int %s = -1;\n' % arg.name)
   out.write('static unsigned long long num_evaluated = 0;\n')
 
-  return inst_evaluations, liveins, configs
+  return inst_evaluations, liveins, configs, out_buffers
 
 def emit_includes(out):
   out.write('#include <string.h>\n') # memcmp
@@ -199,7 +231,7 @@ def emit_includes(out):
   out.write('#define __int64 long long\n')
 
 # FIXME: this is broken (asymptotically)!!!! We shouldn't nest two `parallel' nodes together
-def emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out):
+def emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out_buffers, out):
   next_node_id = None
 
   # reverse the top-sorted inst/configs and emit code for the last instruction group
@@ -232,7 +264,7 @@ def emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out):
       out_sizes = sketch_nodes[inst_config.node_id].inst_groups[inst_config.group_id].output_sizes
       for i, y_size in enumerate(out_sizes):
         if y_size == target_size:
-          output_name = 'y_%d_%d_%d' % (inst_config.node_id, inst_config.group_id, i)
+          output_name = out_buffers[node_id, inst_config.group_id, i]
           out.write('if (memcmp(target, {y}, {y_size}*num_tests) == 0) handle_solution(num_evaluated, {v});\n'.format(
             y=output_name, y_size=bits2bytes(y_size), v=inst_config.node_id
             ))
@@ -500,23 +532,23 @@ def emit_everything(target, sketch_graph, sketch_nodes, out, test_inputs={}):
   emit_includes(out)
   out.write('#include "insts.h"\n')
   insts = set()
-  inst_evaluations, liveins, configs = emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out)
+  inst_evaluations, liveins, configs, out_buffers = emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out)
   emit_init(target, liveins, out, test_inputs=test_inputs)
   emit_solution_handler(configs, out)
-  emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out)
+  emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out_buffers, out)
 
 if __name__ == '__main__':
   import sys
   insts = []
 
-  bw = 64
+  bw = 256
 
   for inst, (input_types, _) in sigs.items():
-    #if sigs[inst][1][0] != 256:
-    #  continue
-
-    if str(bw) not in inst or 'llvm' not in inst:
+    if sigs[inst][1][0] != 256:
       continue
+
+    #if str(bw) not in inst or 'llvm' not in inst:
+    #  continue
 
     #if 'Div' in inst or 'Rem' in inst:
     #  continue
@@ -544,10 +576,11 @@ if __name__ == '__main__':
         insts.append(ConcreteInst(inst, imm8=str(imm8)))
 
   import random
+  random.seed(42)
   random.shuffle(insts)
   insts = insts[:30]
 
-  liveins = [('x', bw), ('y', bw), ('z', bw)]
+  liveins = [('x', bw), ('y', bw)]#, ('z', bw)]
   x, y, z = z3.BitVecs('x y z', bw)
   target = x * y
 
