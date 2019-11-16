@@ -255,7 +255,7 @@ def emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out):
 
   out.write('void enumerate(int num_tests) { run_node_%d(num_tests); }\n' % next_node_id)
   # FIXME: make this real...
-  out.write('int main() { init(); enumerate(10); } \n')
+  out.write('int main() { init(); enumerate(32); } \n')
 
 # FIXME: also make it real
 def emit_solution_handler(configs, out):
@@ -509,13 +509,18 @@ if __name__ == '__main__':
   import sys
   insts = []
 
+  bw = 256
+
   for inst, (input_types, _) in sigs.items():
-    if 'llvm' not in inst:
+    if sigs[inst][1][0] != 256:
       continue
-    #if '32' not in inst or 'llvm' not in inst:
+
+    #if str(bw) not in inst or 'llvm' not in inst:
     #  continue
-    if 'Div' in inst or 'Rem' in inst:
-      continue
+
+    #if 'Div' in inst or 'Rem' in inst:
+    #  continue
+
     #if sigs[inst][1][0] not in (256, ):
     #  continue
     #if ((sigs[inst][1][0] not in (256,128) or ('epi64' not in inst)) and
@@ -538,13 +543,17 @@ if __name__ == '__main__':
       for imm8 in range(256):
         insts.append(ConcreteInst(inst, imm8=str(imm8)))
 
-  liveins = [('x', 32), ('y', 32)]
-  x, y = z3.BitVecs('x y', 32)
-  target = x % y
+  import random
+  random.shuffle(insts)
+  insts = insts[:30]
+
+  liveins = [('x', bw), ('y', bw), ('z', bw)]
+  x, y, z = z3.BitVecs('x y z', bw)
+  target = x * y
 
   g, nodes = make_fully_connected_graph(
       liveins=liveins,
-      constants=[(8,8), (12, 8)],
+      constants=[],
       insts=insts,
       num_levels=4)
   emit_everything(target, g, nodes, sys.stdout)
