@@ -98,6 +98,7 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
         for i, x_size in enumerate(inst_group.input_sizes):
 
           usable_outputs = get_usable_inputs(x_size, sketch_graph, sketch_nodes, outputs, v)
+          usable_outputs.reverse()
           if len(usable_outputs) == 0:
             # cant' use this node, bail!
             outputs.setdefault(v, [])
