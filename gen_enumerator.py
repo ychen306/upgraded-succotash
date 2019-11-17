@@ -134,16 +134,27 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
         node_configs.append(
           InstConfig(name='op_%d_%d' % (v, group_id), node_id=v, group_id=group_id, args=arg_configs, options=inst_group.insts))
 
-        # now run the instruction
-        out.write('switch(op_%d_%d) {\n' % (v, group_id))
         inputs = ['x%d'%i for i in range(num_inputs)]
-        for i, inst in enumerate(inst_group.insts):
-          out.write('case %d: {\n' % i)
 
-          out.write('div_by_zero = run_{inst}_{imm8}(num_tests, {args});\n'.format(
-            inst=inst.name, args=', '.join(inputs + v_outputs), imm8=str(inst.imm8) if inst.imm8 else '0'))
-          out.write('} break;\n') # end case
-        out.write('}\n') # end switch
+        # now run the instruction
+        # first put all the functions that we want to call into an indirect call table
+        params = ['int'] # num tests
+        for _ in range(len(inputs) + len(v_outputs)):
+          params.append('char *__restrict__')
+        funcs = ['run_{inst}_{imm8}'.format(
+          inst=inst.name,
+          imm8=str(inst.imm8) if inst.imm8 else '0')
+          for inst in inst_group.insts]
+        out.write('static int (*funcs[{num_funcs}]) ({param_list}) = {{ {funcs} }};\n'.format(
+          num_funcs = str(len(inst_group.insts)),
+          param_list = ', '.join(params),
+          funcs = ', '.join(funcs)
+          ))
+        out.write('div_by_zero = funcs[op_{node_id}_{group_id}](num_tests, {args});\n'.format(
+            args=', '.join(inputs + v_outputs),
+            node_id=v,
+            group_id=group_id,
+            ))
 
         # skip this instruction if it divs by zero
         out.write('if (div_by_zero) continue;\n')
@@ -227,6 +238,9 @@ def emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out):
       # evaluate the inst once we've fixed its configs
       out.write(inst_eval)
 
+      if next_node_id is None:
+        out.write('num_evaluated += 1;\n')
+
       # now check the result
       out_sizes = sketch_nodes[inst_config.node_id].inst_groups[inst_config.group_id].output_sizes
       for i, y_size in enumerate(out_sizes):
@@ -239,8 +253,6 @@ def emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out):
       # after we've selected the configs for this node, run the next node
       if next_node_id is not None:
         out.write('run_node_%d(num_tests);\n' % next_node_id)
-      else:
-        out.write('num_evaluated += 1;\n')
 
       out.write('}\n' * num_right_braces)
 
@@ -521,6 +533,9 @@ if __name__ == '__main__':
     if str(bw) not in inst or 'llvm' not in inst:
       continue
 
+    if 'llvm' not in inst:
+      continue
+
     if 'Div' in inst or 'Rem' in inst:
       continue
 
@@ -547,8 +562,9 @@ if __name__ == '__main__':
         insts.append(ConcreteInst(inst, imm8=str(imm8)))
 
   import random
+  random.seed(42)
   random.shuffle(insts)
-  #insts = insts[:30]
+  #insts = insts[:32]
 
   liveins = [('x', bw), ('y', bw)]#, ('z', bw)]
   x, y, z = z3.BitVecs('x y z', bw)
