@@ -15,7 +15,7 @@ constants = [0,1,2,4,8,16,32,64,128]
 constants = []
 constant_pool = list(zip(constants, itertools.repeat(8)))
 
-InstGroup = namedtuple('InstGroup', ['insts', 'input_sizes', 'output_sizes'])
+InstGroup = namedtuple('InstGroup', ['insts', 'input_sizes', 'output_sizes', 'commutative_pair'])
 SketchNode = namedtuple('SketchNode', ['inst_groups', 'var', 'var_size', 'const_val'])
 ConcreteInst = namedtuple('ConcreteInst', ['name', 'imm8'])
 ArgConfig = namedtuple('ArgConfig', ['name', 'options', 'switch'])
@@ -140,15 +140,6 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
         for i, inst in enumerate(inst_group.insts):
           out.write('case %d: {\n' % i)
 
-
-          # for each pair of p1,p2 parameters that commute
-          #    enforce the constraint that p2 >= p1
-          commutative_pairs = commutative_params.get(inst.name, [])
-          for p1, p2 in commutative_pairs:
-            p1_config = arg_configs[p1].name
-            p2_config = arg_configs[p2].name
-            out.write('if ({p2} < {p1}) continue;\n'.format(p1=p1_config, p2=p2_config))
-
           out.write('div_by_zero = run_{inst}_{imm8}(num_tests, {args});\n'.format(
             inst=inst.name, args=', '.join(inputs + v_outputs), imm8=str(inst.imm8) if inst.imm8 else '0'))
           out.write('} break;\n') # end case
@@ -210,6 +201,10 @@ def emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out):
 
     # go through each inst group
     for inst_eval, inst_config in zip(node_evals, node_configs):
+      comm_pair = sketch_nodes[inst_config.node_id].inst_groups[inst_config.group_id].commutative_pair
+      p1, p2 = None, None
+      if comm_pair is not None:
+        p1, p2 = comm_pair
 
       # activate this group
       out.write('active_%d_%d = 1;\n' % (inst_config.node_id, inst_config.group_id))
@@ -217,9 +212,12 @@ def emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out):
       # remember the number of right braces we need to close
       num_right_braces = 1
 
-      for arg in inst_config.args:
-        out.write('for ({arg} = 0; {arg} < {options}; {arg}++) {{\n'.format(
-          arg=arg.name, options=len(arg.options)))
+      for arg_id, arg in enumerate(inst_config.args):
+        out.write('for ({arg} = {start}; {arg} < {options}; {arg}++) {{\n'.format(
+          arg=arg.name,
+          options=len(arg.options),
+          start=('0' if p2 != arg_id else inst_config.args[p1].name)
+          ))
         out.write(arg.switch)
         num_right_braces += 1
 
@@ -342,8 +340,12 @@ def make_fully_connected_graph(liveins, insts, num_levels, constants=constant_po
   # FIXME: we need to instantiate an instruction for every possible imm8 if it uses imm8
   for inst in insts:
     input_types, out_sigs = sigs[inst.name]
+    comm_pairs = commutative_params.get(inst.name, [])
+    comm_pair = (None,)
+    if len(comm_pairs) >= 1:
+      comm_pair = (tuple(comm_pairs[0]),)
     sig_without_imm8 = (tuple(ty.bitwidth for ty in input_types if not ty.is_constant), out_sigs)
-    sig2insts[sig_without_imm8].append(inst)
+    sig2insts[sig_without_imm8 + comm_pair].append(inst)
 
   graph = {}
   nodes = {}
@@ -369,13 +371,13 @@ def make_fully_connected_graph(liveins, insts, num_levels, constants=constant_po
   for _ in range(num_levels):
     # nodes for current level
     inst_groups = []
-    for (input_sizes, output_sizes), insts in sig2insts.items():
+    for (input_sizes, output_sizes, comm_pair), insts in sig2insts.items():
       usable = all(bitwidth in available_bitwidths for bitwidth in input_sizes)
       if not usable:
         continue
 
       # we can use this category of instructions. make a group for it
-      inst_groups.append(InstGroup(insts, input_sizes, output_sizes))
+      inst_groups.append(InstGroup(insts, input_sizes, output_sizes, comm_pair))
 
       for size in output_sizes:
         available_bitwidths.add(size)
@@ -546,11 +548,11 @@ if __name__ == '__main__':
 
   import random
   random.shuffle(insts)
-  insts = insts[:30]
+  #insts = insts[:30]
 
-  liveins = [('x', bw), ('y', bw), ('z', bw)]
+  liveins = [('x', bw), ('y', bw)]#, ('z', bw)]
   x, y, z = z3.BitVecs('x y z', bw)
-  target = x * y
+  target = z3.If(x >= y, x , y)
 
   g, nodes = make_fully_connected_graph(
       liveins=liveins,
