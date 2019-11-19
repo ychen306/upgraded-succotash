@@ -47,7 +47,7 @@ def get_usable_inputs(input_size, sketch_graph, sketch_nodes, outputs, v):
 
   return usable_inputs
 
-def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_tests=128):
+def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_tests=128, use_stoke=False):
   '''
   a sketch is a directed graph, where
     * each node is a set of instructions of the same signatures
@@ -113,9 +113,13 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
             for j, (w, group_id2, var_to_use, _) in enumerate(usable_outputs):
               # bail if the group whose output we are using is not active
               guard_inactive_input = 'if (!active_{w}_{group_id}) continue;'.format(w=w, group_id=group_id2)
-              if sketch_nodes[w].inst_groups is None:
+              if use_stoke or sketch_nodes[w].inst_groups is None:
                 # w is one of the livens so always active:
                 guard_inactive_input = ''
+              if use_stoke and sketch_nodes[w].inst_groups is not None:
+                  out.write('needs_update_{v}_{group_id} |= needs_update_{w}_{group_id2};\n'.format(
+                    v=v, w=w, group_id=group_id, group_id2=group_id2
+                    ))
               switch_buf.write('case {j}: {guard_inactive_input} x{i} = {var_to_use}; break;\n'.format(
                 j=j, i=i, var_to_use=var_to_use, guard_inactive_input=guard_inactive_input))
             switch_buf.write('}\n') # end switch
@@ -150,6 +154,8 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
           param_list = ', '.join(params),
           funcs = ', '.join(funcs)
           ))
+        if use_stoke:
+          out.write('if (needs_update_{v}_{group_id}) '.format(v=v, group_id=group_id))
         out.write('div_by_zero = funcs[op_{node_id}_{group_id}](num_tests, {args});\n'.format(
             args=', '.join(inputs + v_outputs),
             node_id=v,
@@ -157,7 +163,10 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
             ))
 
         # skip this instruction if it divs by zero
-        out.write('if (div_by_zero) continue;\n')
+        if use_stoke:
+          out.write('if (div_by_zero) dist += 100;\n')
+        else:
+          out.write('if (div_by_zero) continue;\n')
 
         out.write('}\n') # end scope
 
@@ -186,9 +195,11 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
   for node_configs in configs:
     for inst_config in node_configs:
       out.write('static int active_%d_%d = 0;\n' % (inst_config.node_id, inst_config.group_id))
-      out.write('static int %s = -1;\n' % inst_config.name)
+      if use_stoke:
+        out.write('static int needs_update_%d_%d = 1;\n' % (inst_config.node_id, inst_config.group_id))
+      out.write('static int %s = 0;\n' % inst_config.name)
       for arg in inst_config.args:
-        out.write('static int %s = -1;\n' % arg.name)
+        out.write('static int %s = 0;\n' % arg.name)
   out.write('static unsigned long long num_evaluated = 0;\n')
 
   return inst_evaluations, liveins, configs
@@ -198,8 +209,132 @@ def emit_includes(out):
   out.write('#include <immintrin.h>\n') # duh
   out.write('#include <stdio.h>\n') # debug
   out.write('#include <stdint.h>\n')
+  out.write('#include <math.h>\n')
   out.write('#define __int64_t __int64\n')
   out.write('#define __int64 long long\n')
+
+def emit_stoke(target_size, sketch_nodes, inst_evaluations, configs, out):
+  out.write('''
+static int compute_dist(int best_dist, char *a, char *b, int n) {
+  int i;
+  int dist = 0;
+  for (i = 0; i < n; i+=4) {
+    dist += __builtin_popcount(*((int *)(a+i)) ^ *((int *)(b+i)));
+    if (dist > best_dist)
+      return best_dist;
+  }
+  return dist;
+}
+''')
+
+  out.write('static int *ckpt;\n')
+  out.write('static int ckpt_val;\n')
+  out.write('static int stoke(int num_tests) {\n')
+
+  # declare variable to keep track of hamming dist between target and rewrite
+  out.write('int dist = %d * num_tests;\n' % target_size)
+
+  # emit the mutation code
+  # 1) figure out number of things we can mutate
+  all_configs = []
+  for node_configs in configs:
+    for inst_config in node_configs:
+      node_id = inst_config.node_id
+      group_id = inst_config.group_id
+      all_configs.append((inst_config, node_id, group_id))
+      for arg in inst_config.args:
+        all_configs.append((arg, node_id, group_id))
+
+  out.write('int r = rand();\n')
+  out.write('int r2 = r / {num_configs};\n'.format(
+    num_configs=len(all_configs)))
+
+  out.write('switch (r % {num_configs}) {{\n'.format(
+    num_configs=len(all_configs)))
+
+  for i, (config, node_id, group_id) in enumerate(all_configs):
+    out.write('''case {i}:
+
+    ckpt = &{config_name};
+    ckpt_val = {config_name};
+    {config_name} = r2 % {num_options};
+    needs_update_{node_id}_{group_id} = 1;
+    break;
+
+    '''.format(
+      i=i,
+      config_name=config.name,
+      num_options=len(config.options),
+      node_id=node_id,
+      group_id=group_id,
+    ))
+  out.write('}\n') # end switch
+
+  # run the program
+  for node_configs, node_evals in reversed(list(zip(configs, inst_evaluations))):
+    for inst_eval, inst_config in zip(node_evals, node_configs):
+
+      out.write('{\n')
+
+      for arg in inst_config.args: 
+        # emit code to select the arguments
+        out.write(arg.switch)
+
+      out.write(inst_eval)
+
+      out.write('}\n')
+
+      # check for correctness
+      out_sizes = sketch_nodes[inst_config.node_id].inst_groups[inst_config.group_id].output_sizes
+      for i, y_size in enumerate(out_sizes):
+        if y_size == target_size:
+          output_name = 'y_%d_%d_%d' % (inst_config.node_id, inst_config.group_id, i)
+          out.write('{\n') # begin new scope
+
+          out.write('if (needs_update_%d_%d) ' % (inst_config.node_id, inst_config.group_id))
+          out.write('dist = compute_dist(dist, target, {y}, {y_size}*32);\n'.format(
+            y=output_name, y_size=bits2bytes(y_size)
+            ))
+
+          out.write('}\n') # end scope
+
+  for node_configs in configs:
+    for inst_config in node_configs:
+      out.write('needs_update_%d_%d = 0;\n' % (inst_config.node_id, inst_config.group_id))
+
+  out.write('return dist;\n')
+  out.write('}\n') # end function
+
+  # FIXME: make this real...
+  out.write('''
+static float rand_float() {
+  float r = (float)rand()/(float)RAND_MAX;
+  return r;
+}
+int main() {
+  init();
+  unsigned long long i, limit;
+  limit = 1000 * 1000000;
+  int cost = %s * 32;
+  int best_cost = cost;
+  float BETA = 0.1;
+  for (i = 0; i < limit; i++) {
+    int new_cost = stoke(32);
+    if (cost < new_cost && rand_float() > expf(-BETA * ((float)(new_cost))/((float)(cost)))) {
+      // reject, revert
+      *ckpt = ckpt_val;
+    } else {
+      cost = new_cost;
+    }
+    if (cost < best_cost) {
+      best_cost = cost;
+      fprintf(stderr, "%%llu: %%d\\n", i, cost);
+    }
+    if (cost == 0)
+      handle_solution(num_evaluated, 0);
+  }
+}
+''' % target_size)
 
 def emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out):
   next_node_id = None
@@ -503,7 +638,7 @@ def emit_inst_runners(sketch_nodes, out, h_out):
 
         out.write('}\n') # end function
 
-def emit_everything(target, sketch_graph, sketch_nodes, out, test_inputs={}):
+def emit_everything(target, sketch_graph, sketch_nodes, out, test_inputs={}, use_stoke=False):
   '''
   target is an smt formula
   '''
@@ -514,23 +649,27 @@ def emit_everything(target, sketch_graph, sketch_nodes, out, test_inputs={}):
   emit_includes(out)
   out.write('#include "insts.h"\n')
   insts = set()
-  inst_evaluations, liveins, configs = emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out)
+  inst_evaluations, liveins, configs = emit_inst_evaluations(
+      target_size, sketch_graph, sketch_nodes, out, use_stoke=use_stoke)
   emit_init(target, liveins, out, test_inputs=test_inputs)
   emit_solution_handler(configs, out)
-  emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out)
+  if use_stoke:
+    emit_stoke(target_size, sketch_nodes, inst_evaluations, configs, out)
+  else:
+    emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out)
 
 if __name__ == '__main__':
   import sys
   insts = []
 
-  bw = 256
+  bw = 32
 
   for inst, (input_types, _) in sigs.items():
-    if sigs[inst][1][0] != 256:
-      continue
-
-    #if str(bw) not in inst or 'llvm' not in inst:
+    #if sigs[inst][1][0] != 256:
     #  continue
+
+    if str(bw) not in inst or 'llvm' not in inst:
+      continue
 
     #if 'llvm' not in inst:
     #  continue
@@ -563,7 +702,7 @@ if __name__ == '__main__':
   import random
   random.seed(42)
   random.shuffle(insts)
-  insts = insts[:32]
+  #insts = insts[:32]
 
   liveins = [('x', bw), ('y', bw)]#, ('z', bw)]
   x, y, z = z3.BitVecs('x y z', bw)
@@ -574,4 +713,4 @@ if __name__ == '__main__':
       constants=[],
       insts=insts,
       num_levels=4)
-  emit_everything(target, g, nodes, sys.stdout)
+  emit_everything(target, g, nodes, sys.stdout, use_stoke=True)

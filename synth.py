@@ -24,7 +24,7 @@ llvm_insts = [inst for inst in sigs.keys() if inst.startswith('llvm')]
 job_queue = multiprocessing.Queue()
 result_queue = multiprocessing.Queue()
 
-def synthesize(insts, target, liveins, timeout=5, num_levels=4, test_inputs={}, constants=[]):
+def synthesize(insts, target, liveins, timeout=5, num_levels=4, test_inputs={}, constants=[], use_stoke=False):
   g, nodes = make_fully_connected_graph(
       liveins=liveins,
       insts=[ConcreteInst(inst, imm8=imm8) for inst, imm8 in insts],
@@ -34,11 +34,11 @@ def synthesize(insts, target, liveins, timeout=5, num_levels=4, test_inputs={}, 
   f = NamedTemporaryFile(mode='w', suffix='.c')
   exe.close()
 
-  emit_everything(target, g, nodes, f, test_inputs=test_inputs)
+  emit_everything(target, g, nodes, f, test_inputs=test_inputs, use_stoke=use_stoke)
   f.flush()
   os.system('cp %s t.c' % f.name)
 
-  subprocess.check_output('cc %s insts.o -o %s -I. -O3 2>/dev/null' % (f.name, exe.name), shell=True)
+  subprocess.check_output('cc %s insts.o -march=native -o %s -I. -O3 2>/dev/null' % (f.name, exe.name), shell=True)
   p = subprocess.Popen(['timeout', str(timeout), exe.name], stdout=subprocess.PIPE)
   out = ''
   for _ in range(5):
