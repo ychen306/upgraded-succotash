@@ -201,7 +201,6 @@ def emit_includes(out):
   out.write('#define __int64_t __int64\n')
   out.write('#define __int64 long long\n')
 
-# FIXME: this is broken (asymptotically)!!!! We shouldn't nest two `parallel' nodes together
 def emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out):
   next_node_id = None
 
