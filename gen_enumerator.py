@@ -524,20 +524,20 @@ if __name__ == '__main__':
   import sys
   insts = []
 
-  bw = 32
+  bw = 256
 
   for inst, (input_types, _) in sigs.items():
-    #if sigs[inst][1][0] != 256:
+    if sigs[inst][1][0] != 256:
+      continue
+
+    #if str(bw) not in inst or 'llvm' not in inst:
     #  continue
 
-    if str(bw) not in inst or 'llvm' not in inst:
-      continue
+    #if 'llvm' not in inst:
+    #  continue
 
-    if 'llvm' not in inst:
-      continue
-
-    if 'Div' in inst or 'Rem' in inst:
-      continue
+    #if 'Div' in inst or 'Rem' in inst:
+    #  continue
 
     #if sigs[inst][1][0] not in (256, ):
     #  continue
@@ -564,7 +564,7 @@ if __name__ == '__main__':
   import random
   random.seed(42)
   random.shuffle(insts)
-  #insts = insts[:32]
+  insts = insts[:32]
 
   liveins = [('x', bw), ('y', bw)]#, ('z', bw)]
   x, y, z = z3.BitVecs('x y z', bw)
