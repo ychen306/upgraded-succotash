@@ -38,7 +38,7 @@ def synthesize(insts, target, liveins, timeout=5, num_levels=4, test_inputs={}, 
   f.flush()
   os.system('cp %s t.c' % f.name)
 
-  subprocess.check_output('cc %s insts.o -march=native -o %s -I. -O3 2>/dev/null' % (f.name, exe.name), shell=True)
+  subprocess.check_output('cc %s insts.o -march=native -o %s -I. -O3 -lm 2>/dev/null' % (f.name, exe.name), shell=True)
   p = subprocess.Popen(['timeout', str(timeout), exe.name], stdout=subprocess.PIPE)
   out = ''
   for _ in range(5):

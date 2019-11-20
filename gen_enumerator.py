@@ -254,7 +254,7 @@ static int compute_dist(int best_dist, char *a, char *b, int n) {
   int i;
   int dist = 0;
   for (i = 0; i < n; i+=8) {
-    dist += __builtin_popcountll(*((int *)(a+i)) ^ *((int *)(b+i)));
+    dist += __builtin_popcountll(*((long long *)(a+i)) ^ *((long long *)(b+i)));
     if (dist > best_dist)
       return best_dist;
   }
