@@ -111,20 +111,34 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
             arg_config = 'arg_%d_%d_%d' % (v, group_id, i)
             if use_stoke:
               arg_table_content = []
+              dep_table_content = []
               for j, (w, group_id2, var_to_use, _) in enumerate(usable_outputs):
                 if sketch_nodes[w].inst_groups is not None:
-                    out.write('needs_update_{v}_{group_id} |= needs_update_{w}_{group_id2};\n'.format(
-                      v=v, w=w, group_id=group_id, group_id2=group_id2
-                      ))
+                  #  switch_buf.write('needs_update_{v}_{group_id} |= needs_update_{w}_{group_id2};\n'.format(
+                  #    v=v, w=w, group_id=group_id, group_id2=group_id2
+                  #    ))
+                  dep_table_content.append('&needs_update_{w}_{group_id2}'.format(
+                    w=w, group_id2=group_id2))
+                else:
+                  dep_table_content.append('&zero')
                 arg_table_content.append(var_to_use)
               arg_table = 'table_%s' % arg_config
+              dep_table = 'dep_table_%s' % arg_config
               switch_buf.write('static char *{arg_table}[{num_options}] = {{ {content} }};\n'.format(
                 arg_table=arg_table,
                 num_options=len(arg_table_content),
                 content=', '.join(arg_table_content)
                 ))
+              switch_buf.write('static int *{dep_table}[{num_options}] = {{ {content} }};\n'.format(
+                dep_table=dep_table,
+                num_options=len(dep_table_content),
+                content=', '.join(dep_table_content)
+                ))
               switch_buf.write('{x} = {table}[{config}];\n'.format(
                 x=x, table=arg_table, config=arg_config))
+              switch_buf.write('needs_update_{v}_{group_id} |= *{dep_table}[{config}];\n'.format(
+                v=v, group_id=group_id, dep_table=dep_table, config=arg_config
+                ))
             else:
               switch_buf.write('switch (%s) {\n' % arg_config)
               for j, (w, group_id2, var_to_use, _) in enumerate(usable_outputs):
@@ -205,6 +219,8 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
   out.write('static char target[%d];\n' % (target_bytes * max_tests))
 
   # declare the configs as global variable
+  if use_stoke:
+    out.write('int zero = 0;')
   for node_configs in configs:
     for inst_config in node_configs:
       out.write('static int active_%d_%d = 0;\n' % (inst_config.node_id, inst_config.group_id))
