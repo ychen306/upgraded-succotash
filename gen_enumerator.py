@@ -264,6 +264,7 @@ static int compute_dist(int best_dist, char *a, char *b, int n) {
 
   out.write('static int *ckpt;\n')
   out.write('static int ckpt_val;\n')
+  out.write('static int *dirty_inst;\n')
   out.write('static int stoke(int num_tests) {\n')
 
   # declare variable to keep track of hamming dist between target and rewrite
@@ -294,6 +295,7 @@ static int compute_dist(int best_dist, char *a, char *b, int n) {
     ckpt_val = {config_name};
     {config_name} = r2 % {num_options};
     needs_update_{node_id}_{group_id} = 1;
+    dirty_inst = &needs_update_{node_id}_{group_id};
     break;
 
     '''.format(
@@ -359,10 +361,11 @@ int main() {
   int best_cost = cost;
   float BETA = 0.1;
   for (i = 0; i < limit; i++) {
-    int new_cost = stoke(10);
+    int new_cost = stoke(32);
     if (cost < new_cost && rand_float() > expf(-BETA * ((float)(new_cost))/((float)(cost)))) {
       // reject, revert
       *ckpt = ckpt_val;
+      *dirty_inst = 1;
     } else {
       cost = new_cost;
     }
