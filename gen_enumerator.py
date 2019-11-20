@@ -200,11 +200,11 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
       out.write('static int {name} = {init};\n'.format(
         name=inst_config.name,
         init='0' if use_stoke else '-1'
-        )
+        ))
       for arg in inst_config.args:
         out.write('static int {name} = {init};\n'.format(
           name=arg.name,
-          init='0' if use_stoke else '-1')
+          init='0' if use_stoke else '-1'))
   out.write('static unsigned long long num_evaluated = 0;\n')
 
   return inst_evaluations, liveins, configs
