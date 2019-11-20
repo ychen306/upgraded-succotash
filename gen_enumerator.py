@@ -109,20 +109,33 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
           with io.StringIO() as switch_buf:
             switch_buf.write('char *%s;\n' % x)
             arg_config = 'arg_%d_%d_%d' % (v, group_id, i)
-            switch_buf.write('switch (%s) {\n' % arg_config)
-            for j, (w, group_id2, var_to_use, _) in enumerate(usable_outputs):
-              # bail if the group whose output we are using is not active
-              guard_inactive_input = 'if (!active_{w}_{group_id}) continue;'.format(w=w, group_id=group_id2)
-              if use_stoke or sketch_nodes[w].inst_groups is None:
-                # w is one of the livens so always active:
-                guard_inactive_input = ''
-              if use_stoke and sketch_nodes[w].inst_groups is not None:
-                  out.write('needs_update_{v}_{group_id} |= needs_update_{w}_{group_id2};\n'.format(
-                    v=v, w=w, group_id=group_id, group_id2=group_id2
-                    ))
-              switch_buf.write('case {j}: {guard_inactive_input} x{i} = {var_to_use}; break;\n'.format(
-                j=j, i=i, var_to_use=var_to_use, guard_inactive_input=guard_inactive_input))
-            switch_buf.write('}\n') # end switch
+            if use_stoke:
+              arg_table_content = []
+              for j, (w, group_id2, var_to_use, _) in enumerate(usable_outputs):
+                if sketch_nodes[w].inst_groups is not None:
+                    out.write('needs_update_{v}_{group_id} |= needs_update_{w}_{group_id2};\n'.format(
+                      v=v, w=w, group_id=group_id, group_id2=group_id2
+                      ))
+                arg_table_content.append(var_to_use)
+              arg_table = 'table_%s' % arg_config
+              switch_buf.write('static char *{arg_table}[{num_options}] = {{ {content} }};\n'.format(
+                arg_table=arg_table,
+                num_options=len(arg_table_content),
+                content=', '.join(arg_table_content)
+                ))
+              switch_buf.write('{x} = {table}[{config}];\n'.format(
+                x=x, table=arg_table, config=arg_config))
+            else:
+              switch_buf.write('switch (%s) {\n' % arg_config)
+              for j, (w, group_id2, var_to_use, _) in enumerate(usable_outputs):
+                # bail if the group whose output we are using is not active
+                guard_inactive_input = 'if (!active_{w}_{group_id}) continue;'.format(w=w, group_id=group_id2)
+                if sketch_nodes[w].inst_groups is None:
+                  # w is one of the livens so always active:
+                  guard_inactive_input = ''
+                switch_buf.write('case {j}: {guard_inactive_input} x{i} = {var_to_use}; break;\n'.format(
+                  j=j, i=i, var_to_use=var_to_use, guard_inactive_input=guard_inactive_input))
+              switch_buf.write('}\n') # end switch
             switch = switch_buf.getvalue()
 
           arg_configs.append(ArgConfig(arg_config, usable_outputs, switch))
@@ -197,6 +210,7 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
       out.write('static int active_%d_%d = 0;\n' % (inst_config.node_id, inst_config.group_id))
       if use_stoke:
         out.write('static int needs_update_%d_%d = 1;\n' % (inst_config.node_id, inst_config.group_id))
+        out.write('static int local_dist_%d_%d = 128 * 512;\n' % (inst_config.node_id, inst_config.group_id))
       out.write('static int {name} = {init};\n'.format(
         name=inst_config.name,
         init='0' if use_stoke else '-1'
@@ -223,8 +237,8 @@ def emit_stoke(target_size, sketch_nodes, inst_evaluations, configs, out):
 static int compute_dist(int best_dist, char *a, char *b, int n) {
   int i;
   int dist = 0;
-  for (i = 0; i < n; i+=4) {
-    dist += __builtin_popcount(*((int *)(a+i)) ^ *((int *)(b+i)));
+  for (i = 0; i < n; i+=8) {
+    dist += __builtin_popcountll(*((int *)(a+i)) ^ *((int *)(b+i)));
     if (dist > best_dist)
       return best_dist;
   }
@@ -294,14 +308,19 @@ static int compute_dist(int best_dist, char *a, char *b, int n) {
       for i, y_size in enumerate(out_sizes):
         if y_size == target_size:
           output_name = 'y_%d_%d_%d' % (inst_config.node_id, inst_config.group_id, i)
-          out.write('{\n') # begin new scope
+          # update dist/cost
+          out.write('''
+if (needs_update_{node_id}_{group_id})
+  local_dist_{node_id}_{group_id} = compute_dist(
+    local_dist_{node_id}_{group_id},
+    target, {y}, {y_size}*num_tests);
 
-          out.write('if (needs_update_%d_%d) ' % (inst_config.node_id, inst_config.group_id))
-          out.write('dist = compute_dist(dist, target, {y}, {y_size}*32);\n'.format(
-            y=output_name, y_size=bits2bytes(y_size)
+if (dist > local_dist_{node_id}_{group_id})
+  dist = local_dist_{node_id}_{group_id};
+'''.format(
+            y=output_name, y_size=bits2bytes(y_size),
+            node_id=inst_config.node_id, group_id=inst_config.group_id,
             ))
-
-          out.write('}\n') # end scope
 
   for node_configs in configs:
     for inst_config in node_configs:
@@ -324,7 +343,7 @@ int main() {
   int best_cost = cost;
   float BETA = 0.1;
   for (i = 0; i < limit; i++) {
-    int new_cost = stoke(32);
+    int new_cost = stoke(10);
     if (cost < new_cost && rand_float() > expf(-BETA * ((float)(new_cost))/((float)(cost)))) {
       // reject, revert
       *ckpt = ckpt_val;
@@ -336,7 +355,7 @@ int main() {
       fprintf(stderr, "%%llu: %%d\\n", i, cost);
     }
     if (cost == 0)
-      handle_solution(num_evaluated, 0);
+      handle_solution(i, 0);
   }
 }
 ''' % target_size)
@@ -429,6 +448,7 @@ def emit_solution_handler(configs, out):
           for i, arg in enumerate(arg_config.options):
             out.write('case %d: printf("%s "); break;\n' % (i, arg[2]))
           out.write('}\n') # end switch
+      out.write('printf("; ");')
     out.write('printf("\\n");\n')
 
   #out.write('exit(1);\n')
@@ -667,17 +687,17 @@ if __name__ == '__main__':
   import sys
   insts = []
 
-  bw = 32
+  bw = 64
 
   for inst, (input_types, _) in sigs.items():
     #if sigs[inst][1][0] != 256:
     #  continue
 
-    if str(bw) not in inst or 'llvm' not in inst:
-      continue
-
-    #if 'llvm' not in inst:
+    #if str(bw) not in inst or 'llvm' not in inst:
     #  continue
+
+    if 'llvm' not in inst:
+      continue
 
     #if 'Div' in inst or 'Rem' in inst:
     #  continue
@@ -711,7 +731,7 @@ if __name__ == '__main__':
 
   liveins = [('x', bw), ('y', bw)]#, ('z', bw)]
   x, y, z = z3.BitVecs('x y z', bw)
-  target = z3.If(x >= y, x , y)
+  target = z3.If(x >= y, x , y) * x * y + y * 8
 
   g, nodes = make_fully_connected_graph(
       liveins=liveins,
