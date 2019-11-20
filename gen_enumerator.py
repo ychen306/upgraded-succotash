@@ -360,7 +360,7 @@ int main() {
   int cost = %s * 32;
   int best_cost = cost;
   float BETA = 0.1;
-  for (i = 0; i < limit; i++) {
+  for (i = 0; ; i++) {
     int new_cost = stoke(32);
     if (cost < new_cost && rand_float() > expf(-BETA * ((float)(new_cost))/((float)(cost)))) {
       // reject, revert
