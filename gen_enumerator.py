@@ -97,7 +97,8 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
         inst_group_inactive = False
         for i, x_size in enumerate(inst_group.input_sizes):
 
-          usable_outputs = get_usable_inputs(x_size, sketch_graph, sketch_nodes, outputs, v)
+          usable_outputs = get_usable_inputs(
+            x_size, sketch_graph, sketch_nodes, outputs, v)
           usable_outputs.reverse()
           if len(usable_outputs) == 0:
             # cant' use this node, bail!
@@ -112,12 +113,17 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
             switch_buf.write('switch (%s) {\n' % arg_config)
             for j, (w, group_id2, var_to_use, _) in enumerate(usable_outputs):
               # bail if the group whose output we are using is not active
-              guard_inactive_input = 'if (!active_{w}_{group_id}) continue;'.format(w=w, group_id=group_id2)
+              guard_inactive_input = (
+                'if (!active_{w}_{group_id}) continue;'.format(
+                  w=w, group_id=group_id2))
               if sketch_nodes[w].inst_groups is None:
                 # w is one of the livens so always active:
                 guard_inactive_input = ''
-              switch_buf.write('case {j}: {guard_inactive_input} x{i} = {var_to_use}; break;\n'.format(
-                j=j, i=i, var_to_use=var_to_use, guard_inactive_input=guard_inactive_input))
+              switch_buf.write(
+                'case {j}: {guard_inactive_input} x{i} = {var_to_use}; break;\n'.format(
+                j=j, i=i,
+                var_to_use=var_to_use,
+                guard_inactive_input=guard_inactive_input))
             switch_buf.write('}\n') # end switch
             switch = switch_buf.getvalue()
 
@@ -132,7 +138,11 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
           
         num_insts = len(inst_group.insts)
         node_configs.append(
-          InstConfig(name='op_%d_%d' % (v, group_id), node_id=v, group_id=group_id, args=arg_configs, options=inst_group.insts))
+          InstConfig(name='op_%d_%d' % (v, group_id), 
+            node_id=v,
+            group_id=group_id,
+            args=arg_configs,
+            options=inst_group.insts))
 
         inputs = ['x%d'%i for i in range(num_inputs)]
 
