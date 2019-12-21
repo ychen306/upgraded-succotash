@@ -524,7 +524,8 @@ def emit_everything(target, sketch_graph, sketch_nodes, out, test_inputs={}):
   emit_includes(out)
   out.write('#include "insts.h"\n')
   insts = set()
-  inst_evaluations, liveins, configs = emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out)
+  inst_evaluations, liveins, configs = emit_inst_evaluations(
+      target_size, sketch_graph, sketch_nodes, out)
   emit_init(target, liveins, out, test_inputs=test_inputs)
   emit_solution_handler(configs, out)
   emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out)
