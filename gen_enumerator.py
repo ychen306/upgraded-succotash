@@ -24,6 +24,9 @@ InstConfig = namedtuple('InstConfig', ['name', 'node_id', 'group_id', 'options',
 with open('commutative-params.json') as f:
   commutative_params = json.load(f)
 
+def get_selected_arg(arg):
+  return 'selected_%s' % arg
+
 def create_inst_node(inst_groups):
   return SketchNode(inst_groups, None, None, None)
 
@@ -35,6 +38,9 @@ def bits2bytes(bits):
     assert bits == 1
     return 4
   return bits // 8
+
+def get_arg_counter(arg_name):
+  return 'counter_' + arg_name
 
 def get_usable_inputs(input_size, sketch_graph, sketch_nodes, outputs, v):
   usable_inputs = []
@@ -94,9 +100,9 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
 
         # generate code to select arguments
         arg_configs = []
+        inputs = []
         inst_group_inactive = False
         for i, x_size in enumerate(inst_group.input_sizes):
-
           usable_outputs = get_usable_inputs(
             x_size, sketch_graph, sketch_nodes, outputs, v)
           usable_outputs.reverse()
@@ -106,24 +112,38 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
             inst_group_inactive = True
             break
 
-          x = 'x%i' % i
+          usable_nodes = set(w for w, _, _, _ in usable_outputs)
+
+          arg_config = 'arg_%d_%d_%d' % (v, group_id, i)
+          selected = get_selected_arg(arg_config)
+          inputs.append(selected)
+
           with io.StringIO() as switch_buf:
-            switch_buf.write('char *%s;\n' % x)
-            arg_config = 'arg_%d_%d_%d' % (v, group_id, i)
+            ref_counter = get_arg_counter(arg_config)
             switch_buf.write('switch (%s) {\n' % arg_config)
             for j, (w, group_id2, var_to_use, _) in enumerate(usable_outputs):
-              # bail if the group whose output we are using is not active
-              guard_inactive_input = (
-                'if (!active_{w}_{group_id}) continue;'.format(
-                  w=w, group_id=group_id2))
               if sketch_nodes[w].inst_groups is None:
-                # w is one of the livens so always active:
-                guard_inactive_input = ''
+                # live-ins is always alive
+                liveness_tracking = '%s = NULL;' % ref_counter
+              else:
+                liveness_tracking = '''
+                alive_{w}_{group_id2} ++;
+                {ref_counter} = &alive_{w}_{group_id2};
+                '''.format(w=w, group_id2=group_id2, ref_counter=ref_counter)
+
               switch_buf.write(
-                'case {j}: {guard_inactive_input} x{i} = {var_to_use}; break;\n'.format(
-                j=j, i=i,
-                var_to_use=var_to_use,
-                guard_inactive_input=guard_inactive_input))
+                '''case {j}:
+                  {selected} = {var_to_use};
+                  {liveness_tracking}
+                  break;\n'''
+                .format(
+                  j=j, i=i,
+                  w=w,
+                  var_to_use=var_to_use,
+                  liveness_tracking=liveness_tracking,
+                  selected=selected,
+                  group_id=group_id2
+                  ))
             switch_buf.write('}\n') # end switch
             switch = switch_buf.getvalue()
 
@@ -134,8 +154,7 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
           continue
 
         v_outputs = ['y_%d_%d_%d'%(v, group_id, i) for i in range(num_outputs)]
-        arg_list = ['x%d'%i for i in range(num_inputs)] + [y for y in v_outputs]
-          
+
         num_insts = len(inst_group.insts)
         node_configs.append(
           InstConfig(name='op_%d_%d' % (v, group_id), 
@@ -143,8 +162,6 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
             group_id=group_id,
             args=arg_configs,
             options=inst_group.insts))
-
-        inputs = ['x%d'%i for i in range(num_inputs)]
 
         # now run the instruction
         # first put all the functions that we want to call into an indirect call table
@@ -172,7 +189,8 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
         out.write('}\n') # end scope
 
         node_evals.append(out.getvalue())
-        outputs.setdefault(v, []).extend(zip(itertools.repeat(group_id), v_outputs, inst_group.output_sizes))
+        outputs.setdefault(v, []).extend(
+            zip(itertools.repeat(group_id), v_outputs, inst_group.output_sizes))
 
         ###### end buf scope...
       # end loop...
@@ -193,12 +211,21 @@ def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_test
   out.write('static char target[%d];\n' % (target_bytes * max_tests))
 
   # declare the configs as global variable
-  for node_configs in configs:
+  for i, node_configs in enumerate(configs):
+    at_last_node = i == len(configs)-1
+    alive = 1 if at_last_node else 0
     for inst_config in node_configs:
-      out.write('static int active_%d_%d = 0;\n' % (inst_config.node_id, inst_config.group_id))
+      out.write('static int alive_%s_%s = %d;\n' % (
+        inst_config.node_id, 
+        inst_config.group_id,
+        alive
+        ))
+      out.write('static int active_%s_%s = 0;\n' % (
+        inst_config.node_id, inst_config.group_id))
       out.write('static int %s = -1;\n' % inst_config.name)
       for arg in inst_config.args:
         out.write('static int %s = -1;\n' % arg.name)
+        out.write('static char *%s;\n' % get_selected_arg(arg.name))
   out.write('static unsigned long long num_evaluated = 0;\n')
 
   return inst_evaluations, liveins, configs
@@ -212,25 +239,46 @@ def emit_includes(out):
   out.write('#define __int64 long long\n')
 
 def emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out):
-  next_node_id = None
+  node_ids = []
+  # forward declare the funcs
+  for node_configs in configs:
+    node_id = node_configs[0].node_id
+    out.write('static void run_node_%d(int);\n' % node_id)
+    out.write('static void run_node_%d_aux(int);\n' % node_id)
+    node_ids.append(node_id)
 
-  # reverse the top-sorted inst/configs and emit code for the last instruction group
-  for node_configs, node_evals in reversed(list(zip(configs, inst_evaluations))):
+  # go through the levels bottom-up
+  for level_id, (node_configs, node_evals) in enumerate(
+      reversed(list(zip(configs, inst_evaluations)))):
     node_id = node_configs[0].node_id
     out.write('static void run_node_%d(int num_tests) {\n' % node_id)
 
-    # go through each inst group
+    liveness_flags = []
     for inst_eval, inst_config in zip(node_evals, node_configs):
       comm_pair = sketch_nodes[inst_config.node_id].inst_groups[inst_config.group_id].commutative_pair
       p1, p2 = None, None
       if comm_pair is not None:
         p1, p2 = comm_pair
 
-      # activate this group
-      out.write('active_%d_%d = 1;\n' % (inst_config.node_id, inst_config.group_id))
+      # the liveness flag
+      lf = 'alive_%d_%d' % (
+          inst_config.node_id, inst_config.group_id)
+      # indicate that we are enumerating this group
+      out.write('active_%d_%d = 1;\n' % (
+        inst_config.node_id, inst_config.group_id))
+      # don't bother enumerate this config if it doesn't have any user
+      out.write('if (%s)\n' % lf)
+      liveness_flags.append(lf)
+
+      if level_id < len(configs)-1:
+        next_configs = configs[len(configs)-(level_id+1)-1]
+        next_node_id = next_configs[0].node_id
+        iter_next_level = 'run_node_%d(num_tests);\n' % next_node_id
+      else:
+        iter_next_level = 'run_node_%d_aux(num_tests);\n' % node_id
 
       # remember the number of right braces we need to close
-      num_right_braces = 1
+      scope_stack = []
 
       for arg_id, arg in enumerate(inst_config.args):
         out.write('for ({arg} = {start}; {arg} < {options}; {arg}++) {{\n'.format(
@@ -238,17 +286,55 @@ def emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out):
           options=len(arg.options),
           start=('0' if p2 != arg_id else inst_config.args[p1].name)
           ))
+
+        ref_counter = get_arg_counter(arg.name)
+        # declare it
+        out.write('int *%s;\n' % ref_counter)
         out.write(arg.switch)
-        num_right_braces += 1
+        # decrement the counter once we are done using a value
+        scope_stack.append(
+            "if ({counter}) (*{counter})--;\n}}\n"
+            .format(counter=ref_counter))
+
+      # after we've selected the configs for this node run the preceding nodes
+      out.write(iter_next_level)
+
+      # decrement the reference count and close the braces
+      while len(scope_stack) > 0:
+        out.write(scope_stack.pop())
+
+      # indicate that we are not enumerating this group anymore
+      out.write('active_%d_%d = 0;\n' % (
+        inst_config.node_id, inst_config.group_id))
+
+    # still enumerate the next level even if the whole level is dead
+    out.write('if (!(%s)) { %s }\n' % (
+      '||'.join(liveness_flags), iter_next_level
+      ))
+
+    out.write('}\n') # close the function for this node
+
+  next_node_id = None
+  first_node_id = None
+  for node_configs, node_evals in reversed(list(zip(configs, inst_evaluations))):
+    node_id = node_configs[0].node_id
+    if first_node_id is None:
+      first_node_id = node_id
+    out.write('static void run_node_%d_aux(int num_tests) {\n' % node_id)
+
+    active_flags = []
+
+    for inst_eval, inst_config in zip(reversed(node_evals), reversed(node_configs)):
+      # flag indicating whether a group is active
+      af = 'active_%d_%d' % (inst_config.node_id, inst_config.group_id)
+      out.write('if (%s)\n' % af)
+      active_flags.append(af)
 
       out.write('for ({op} = 0; {op} < {options}; {op}++) {{\n'.format(
         op=inst_config.name, options=len(inst_config.options)))
 
-      # evaluate the inst once we've fixed its configs
+      # evaluate the inst
       out.write(inst_eval)
-
-      if next_node_id is None:
-        out.write('num_evaluated += 1;\n')
 
       # now check the result
       out_sizes = sketch_nodes[inst_config.node_id].inst_groups[inst_config.group_id].output_sizes
@@ -259,21 +345,28 @@ def emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out):
             y=output_name, y_size=bits2bytes(y_size), v=inst_config.node_id
             ))
 
-      # after we've selected the configs for this node, run the next node
-      if next_node_id is not None:
-        out.write('run_node_%d(num_tests);\n' % next_node_id)
+      if next_node_id is None:
+        # at the leaf node 
+        out.write('num_evaluated += 1;\n')
+      else:
+        out.write('run_node_%d_aux(num_tests);\n' % next_node_id)
 
-      out.write('}\n' * num_right_braces)
+      out.write('}\n') # close the loop
 
-      # deactivate this group
-      out.write('active_%d_%d = 0;\n' % (inst_config.node_id, inst_config.group_id))
-
-    next_node_id = inst_config.node_id
+    # in the case that none of the groups are active,
+    # we still want to enumerate the next level
+    if next_node_id is not None:
+      out.write('if (!({flags})) run_node_{next_node_id}_aux(num_tests);\n'
+          .format(
+            flags='||'.join(active_flags),
+            next_node_id = next_node_id
+            ))
 
     out.write('}\n') # close the function for this node
+    next_node_id = node_id
 
 
-  out.write('void enumerate(int num_tests) { run_node_%d(num_tests); }\n' % next_node_id)
+  out.write('void enumerate(int num_tests) { run_node_%d(num_tests); }\n' % first_node_id)
   # FIXME: make this real...
   out.write('int main() { init(); enumerate(32); } \n')
 
@@ -534,20 +627,20 @@ if __name__ == '__main__':
   import sys
   insts = []
 
-  bw = 256
+  bw = 32
 
   for inst, (input_types, _) in sigs.items():
-    if sigs[inst][1][0] != 256:
-      continue
+    #if sigs[inst][1][0] != 256:
+    #  continue
 
     #if str(bw) not in inst or 'llvm' not in inst:
     #  continue
 
-    #if 'llvm' not in inst:
-    #  continue
+    if 'llvm' not in inst:
+      continue
 
-    #if 'Div' in inst or 'Rem' in inst:
-    #  continue
+    if 'Div' in inst or 'Rem' in inst:
+      continue
 
     #if sigs[inst][1][0] not in (256, ):
     #  continue
@@ -574,7 +667,6 @@ if __name__ == '__main__':
   import random
   random.seed(42)
   random.shuffle(insts)
-  insts = insts[:32]
 
   liveins = [('x', bw), ('y', bw)]#, ('z', bw)]
   x, y, z = z3.BitVecs('x y z', bw)
