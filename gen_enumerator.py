@@ -173,7 +173,8 @@ class SolutionHandler:
         args = []
         for arg in node.args:
           if type(arg) == LiveInNode:
-            arg_name = str(arg.x)
+            v, _ = arg.x
+            arg_name = str(v)
           else:
             arg_name = 'y%d' % arg.level
           args.append(arg_name)
@@ -306,7 +307,7 @@ def emit_enumerator(target_size, graphs,
         args=', '.join(arg_list)))
 
       # skip if divide by zero
-      out.write('if (div_by_zero) continue;\n')
+      out.write('if (__builtin_expect(div_by_zero, 0)) { num_enumerated++; continue; }\n')
     else:
       if root_cert is not None:
         print(g)
@@ -328,7 +329,7 @@ def emit_enumerator(target_size, graphs,
             args=', '.join(iterators)))
 
     if cert in soln_handlers:
-      out.write('if (memcmp(target, {out_buf}, {size}*num_tests) == 0)\n'
+      out.write('if (bcmp(target, {out_buf}, {size}*num_tests) == 0)\n'
           .format(
             out_buf=out_buf,
             size=bits2bytes(target_size)))
@@ -634,14 +635,14 @@ if __name__ == '__main__':
   import sys
   insts = []
 
-  bw = 32
+  bw = 256
 
   for inst, (input_types, _) in sigs.items():
-    #if sigs[inst][1][0] != 256:
-    #  continue
-
-    if str(bw) not in inst or 'llvm' not in inst:
+    if sigs[inst][1][0] != 256:
       continue
+
+    #if str(bw) not in inst or 'llvm' not in inst:
+    #  continue
 
     #if 'llvm' not in inst:
     #  continue
@@ -674,10 +675,10 @@ if __name__ == '__main__':
   import random
   random.seed(42)
   random.shuffle(insts)
-  insts = insts[:100]
+  insts = insts[:30]
 
   liveins = [Variable('x', bw), Variable('y', bw)]#, ('z', bw)]
-  constants = [Constant(1,32), Constant(0,32)]
+  constants = [Constant(1,256), Constant(0,256)]
   x, y, z = z3.BitVecs('x y z', bw)
   target = z3.If(x >= y, x, y)
 
@@ -703,6 +704,6 @@ if __name__ == '__main__':
 int main() { 
   init();
   enumerate(32);
-  printf("num enumerated: %llu\n", num_enumerated); 
+  printf("num enumerated: %llu\\n", num_enumerated); 
 }
   ''')
