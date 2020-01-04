@@ -4,204 +4,29 @@ import itertools
 import io
 from expr_sampler import sigs
 import sys
+import pynauty
+from copy import copy
 
 import z3
 import json
 
-def debug(*args):
-  print(*args, file=sys.stderr)
-
-constants = [0,1,2,4,8,16,32,64,128]
-constants = []
-constant_pool = list(zip(constants, itertools.repeat(8)))
-
-InstGroup = namedtuple('InstGroup', ['insts', 'input_sizes', 'output_sizes', 'commutative_pair'])
-SketchNode = namedtuple('SketchNode', ['inst_groups', 'var', 'var_size', 'const_val'])
 ConcreteInst = namedtuple('ConcreteInst', ['name', 'imm8'])
-ArgConfig = namedtuple('ArgConfig', ['name', 'options', 'switch'])
-InstConfig = namedtuple('InstConfig', ['name', 'node_id', 'group_id', 'options', 'args'])
+Variable = namedtuple('Variable', ['name', 'bitwidth'])
+Constant = namedtuple('Constant', ['value', 'bitwidth'])
+InstNode = namedtuple('InstNode', ['level', 'sig', 'args'])
+LiveInNode = namedtuple('LiveInNode', ['x'])
+InstSignature = namedtuple(
+    'InstSignature',
+    ['inputs', 'outputs', 'commutative_pair'])
 
 with open('commutative-params.json') as f:
   commutative_params = json.load(f)
-
-def create_inst_node(inst_groups):
-  return SketchNode(inst_groups, None, None, None)
-
-def create_var_node(var, size, const_val=None):
-  return SketchNode(None, var, size, const_val)
 
 def bits2bytes(bits):
   if bits < 8:
     assert bits == 1
     return 4
   return bits // 8
-
-def get_usable_inputs(input_size, sketch_graph, sketch_nodes, outputs, v):
-  usable_inputs = []
-  for w in sketch_graph[v]:
-    for group_id, output, size in outputs[w]:
-      if size == input_size:
-        # FIXME: use a namedtuple
-        # also include the group id, so that we only select the output if the group is active
-        usable_inputs.append((w, group_id, output, size))
-
-  return usable_inputs
-
-def emit_inst_evaluations(target_size, sketch_graph, sketch_nodes, out, max_tests=128):
-  '''
-  a sketch is a directed graph, where
-    * each node is a set of instructions of the same signatures
-    * each edges specifies nodes from which the set of instructions can use as instruction arguments
-
-  sketch_graph : a map from nodes to dependencies
-  sketch_nodes : node id -> [ <sketch node> ]
-  '''
-  visited = set()
-  # mapping node -> variable representing the output
-  outputs = {}
-  inst_evaluations = []
-  configs = []
-  liveins = []
-
-  def visit(v):
-    if v in visited:
-      return
-    visited.add(v)
-
-    is_leaf = v not in sketch_graph
-    if is_leaf:
-      var = sketch_nodes[v].var
-      size = sketch_nodes[v].var_size
-      const_val = sketch_nodes[v].const_val
-      assert var is not None
-      outputs[v] = [(0, var, size)]
-      liveins.append((var, size, const_val))
-      return
-
-    for w in sketch_graph[v]:
-      visit(w)
-
-    node_evals = []
-    node_configs = []
-    for group_id, inst_group in enumerate(sketch_nodes[v].inst_groups):
-      with io.StringIO() as out:
-        num_inputs = len(inst_group.input_sizes)
-        num_outputs = len(inst_group.output_sizes)
-      
-        out.write('{\n') # new scope
-
-        out.write('int div_by_zero = 0;\n')
-
-        # generate code to select arguments
-        arg_configs = []
-        inst_group_inactive = False
-        for i, x_size in enumerate(inst_group.input_sizes):
-
-          usable_outputs = get_usable_inputs(
-            x_size, sketch_graph, sketch_nodes, outputs, v)
-          usable_outputs.reverse()
-          if len(usable_outputs) == 0:
-            # cant' use this node, bail!
-            outputs.setdefault(v, [])
-            inst_group_inactive = True
-            break
-
-          x = 'x%i' % i
-          with io.StringIO() as switch_buf:
-            switch_buf.write('char *%s;\n' % x)
-            arg_config = 'arg_%d_%d_%d' % (v, group_id, i)
-            switch_buf.write('switch (%s) {\n' % arg_config)
-            for j, (w, group_id2, var_to_use, _) in enumerate(usable_outputs):
-              # bail if the group whose output we are using is not active
-              guard_inactive_input = (
-                'if (!active_{w}_{group_id}) continue;'.format(
-                  w=w, group_id=group_id2))
-              if sketch_nodes[w].inst_groups is None:
-                # w is one of the livens so always active:
-                guard_inactive_input = ''
-              switch_buf.write(
-                'case {j}: {guard_inactive_input} x{i} = {var_to_use}; break;\n'.format(
-                j=j, i=i,
-                var_to_use=var_to_use,
-                guard_inactive_input=guard_inactive_input))
-            switch_buf.write('}\n') # end switch
-            switch = switch_buf.getvalue()
-
-          arg_configs.append(ArgConfig(arg_config, usable_outputs, switch))
-
-        # move on if we can statically show that this group never has usable values
-        if inst_group_inactive:
-          continue
-
-        v_outputs = ['y_%d_%d_%d'%(v, group_id, i) for i in range(num_outputs)]
-        arg_list = ['x%d'%i for i in range(num_inputs)] + [y for y in v_outputs]
-          
-        num_insts = len(inst_group.insts)
-        node_configs.append(
-          InstConfig(name='op_%d_%d' % (v, group_id), 
-            node_id=v,
-            group_id=group_id,
-            args=arg_configs,
-            options=inst_group.insts))
-
-        inputs = ['x%d'%i for i in range(num_inputs)]
-
-        # now run the instruction
-        # first put all the functions that we want to call into an indirect call table
-        params = ['int'] # num tests
-        for _ in range(len(inputs) + len(v_outputs)):
-          params.append('char *__restrict__')
-        funcs = ['run_{inst}_{imm8}'.format(
-          inst=inst.name,
-          imm8=str(inst.imm8) if inst.imm8 else '0')
-          for inst in inst_group.insts]
-        out.write('static int (*funcs[{num_funcs}]) ({param_list}) = {{ {funcs} }};\n'.format(
-          num_funcs = str(len(inst_group.insts)),
-          param_list = ', '.join(params),
-          funcs = ', '.join(funcs)
-          ))
-        out.write('div_by_zero = funcs[op_{node_id}_{group_id}](num_tests, {args});\n'.format(
-            args=', '.join(inputs + v_outputs),
-            node_id=v,
-            group_id=group_id,
-            ))
-
-        # skip this instruction if it divs by zero
-        out.write('if (div_by_zero) continue;\n')
-
-        out.write('}\n') # end scope
-
-        node_evals.append(out.getvalue())
-        outputs.setdefault(v, []).extend(zip(itertools.repeat(group_id), v_outputs, inst_group.output_sizes))
-
-        ###### end buf scope...
-      # end loop...
-    inst_evaluations.append(node_evals)
-    configs.append(node_configs)
-
-  with io.StringIO() as buf:
-    for v in sketch_graph:
-      visit(v)
-
-  # allocate the buffers storing the variables/temporaries
-  for bufs in outputs.values():
-    for _, var, size in bufs:
-      bytes = bits2bytes(size)
-      out.write('static char %s[%d] __attribute__ ((aligned (64)));\n' % (var, bytes * max_tests))
-  # also allocate the variable storing the targets
-  target_bytes = bits2bytes(target_size)
-  out.write('static char target[%d];\n' % (target_bytes * max_tests))
-
-  # declare the configs as global variable
-  for node_configs in configs:
-    for inst_config in node_configs:
-      out.write('static int active_%d_%d = 0;\n' % (inst_config.node_id, inst_config.group_id))
-      out.write('static int %s = -1;\n' % inst_config.name)
-      for arg in inst_config.args:
-        out.write('static int %s = -1;\n' % arg.name)
-  out.write('static unsigned long long num_evaluated = 0;\n')
-
-  return inst_evaluations, liveins, configs
 
 def emit_includes(out):
   out.write('#include <string.h>\n') # memcmp
@@ -211,205 +36,521 @@ def emit_includes(out):
   out.write('#define __int64_t __int64\n')
   out.write('#define __int64 long long\n')
 
-def emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out):
-  next_node_id = None
+def get_inst_runner_name(inst):
+  return 'run_{inst}_{imm8}'.format(
+      inst=inst.name,
+      imm8=str(inst.imm8) if inst.imm8 else '0')
 
-  # reverse the top-sorted inst/configs and emit code for the last instruction group
-  for node_configs, node_evals in reversed(list(zip(configs, inst_evaluations))):
-    node_id = node_configs[0].node_id
-    out.write('static void run_node_%d(int num_tests) {\n' % node_id)
+def emit_func_table(table_name, sig, insts):
+  tmpl = 'static int (*{name}[{num_insts}])({param_list}) = {{ {funcs} }};\n'
+  params = ['int'] # num tests
+  for _ in range(len(sig.inputs) + len(sig.outputs)):
+    params.append('char *__restrict__')
+  return tmpl.format(
+      name=table_name,
+      num_insts=len(insts),
+      param_list=', '.join(params),
+      funcs=', '.join(get_inst_runner_name(inst) for inst in insts))
 
-    # go through each inst group
-    for inst_eval, inst_config in zip(node_evals, node_configs):
-      comm_pair = sketch_nodes[inst_config.node_id].inst_groups[inst_config.group_id].commutative_pair
-      p1, p2 = None, None
-      if comm_pair is not None:
-        p1, p2 = comm_pair
+class FuncTableSet:
+  def __init__(self, sig2insts):
+    # mapping <sig> -> <table name>, <table defn>
+    self.tables = {}
 
-      # activate this group
-      out.write('active_%d_%d = 1;\n' % (inst_config.node_id, inst_config.group_id))
+    for i, (sig, insts) in enumerate(sig2insts.items()):
+      table_name = 'table_%d' % i
+      self.tables[sig] = table_name, emit_func_table(table_name, sig, insts)
 
-      # remember the number of right braces we need to close
-      num_right_braces = 1
+  def get_table_def(self, sig):
+    _, defn = self.tables[sig]
+    return defn
 
-      for arg_id, arg in enumerate(inst_config.args):
-        out.write('for ({arg} = {start}; {arg} < {options}; {arg}++) {{\n'.format(
-          arg=arg.name,
-          options=len(arg.options),
-          start=('0' if p2 != arg_id else inst_config.args[p1].name)
-          ))
-        out.write(arg.switch)
-        num_right_braces += 1
+  def get_table(self, sig):
+    table_name, _ = self.tables[sig]
+    return table_name
 
-      out.write('for ({op} = 0; {op} < {options}; {op}++) {{\n'.format(
-        op=inst_config.name, options=len(inst_config.options)))
+def declare_buffer(name, bitwidth, size):
+  return 'static char %s[%d] __attribute__ ((aligned (64)));\n' % (
+      name, bits2bytes(bitwidth)*size)
 
-      # evaluate the inst once we've fixed its configs
-      out.write(inst_eval)
+def get_livein_buf_name(x):
+  return 'buf_input_%s' % x.name
 
-      if next_node_id is None:
-        out.write('num_evaluated += 1;\n')
+def get_const_buf_name(c):
+  return 'buf_const_%d_%d' % (c.value, c.bitwidth)
 
-      # now check the result
-      out_sizes = sketch_nodes[inst_config.node_id].inst_groups[inst_config.group_id].output_sizes
-      for i, y_size in enumerate(out_sizes):
-        if y_size == target_size:
-          output_name = 'y_%d_%d_%d' % (inst_config.node_id, inst_config.group_id, i)
-          out.write('if (memcmp(target, {y}, {y_size}*num_tests) == 0) handle_solution(num_evaluated, {v});\n'.format(
-            y=output_name, y_size=bits2bytes(y_size), v=inst_config.node_id
-            ))
+class BufferAllocator:
+  def __init__(self, graphs, liveins, constants, max_tests=128):
+    self.max_tests = max_tests
+    # mapping <bitwidth> -> <maximum number of buffer required for the bitwidth>
+    bitwidths = defaultdict(int)
+    bitwidths_max = defaultdict(int)
+    for g in graphs.values():
+      bitwidths = defaultdict(int)
+      for node in g:
+        bw = node.sig.outputs[0]
+        bitwidths[bw] += 1
+      for bw, count in bitwidths.items():
+        bitwidths_max[bw] = max(bitwidths_max[bw], count)
 
-      # after we've selected the configs for this node, run the next node
-      if next_node_id is not None:
-        out.write('run_node_%d(num_tests);\n' % next_node_id)
+    # mapping <bitwidth> -> [<buf name>, <buf defn>]
+    self.buffers = defaultdict(list)
+    for bw, count in bitwidths_max.items():
+      for i in range(count):
+        buf_name = 'buf_%d_%d' % (bw, i)
+        buf_def = declare_buffer(buf_name, bw, max_tests)
+        self.buffers[bw].append((buf_name, buf_def))
 
-      out.write('}\n' * num_right_braces)
+    self.livein_bufs = {}
+    for x in liveins:
+      buf_name = get_livein_buf_name(x)
+      buf_def = declare_buffer(buf_name, x.bitwidth, max_tests)
+      self.livein_bufs[x] = buf_name, buf_def
 
-      # deactivate this group
-      out.write('active_%d_%d = 0;\n' % (inst_config.node_id, inst_config.group_id))
+    self.const_bufs = {}
+    for c in constants:
+      buf_name = get_const_buf_name(c)
+      buf_def = declare_buffer(buf_name, c.bitwidth, max_tests)
+      self.const_bufs[c] = buf_name, buf_def
 
-    next_node_id = inst_config.node_id
+  def reset(self):
+    self.counters = defaultdict(int)
 
-    out.write('}\n') # close the function for this node
+  def allocate(self, bitwidth):
+    i = self.counters[bitwidth]
+    self.counters[bitwidth] += 1
+    buf, _ = self.buffers[bitwidth][i]
+    return buf
 
+  def get_livein_buf(self, x):
+    buf_name, _ = self.livein_bufs[x]
+    return buf_name
 
-  out.write('void enumerate(int num_tests) { run_node_%d(num_tests); }\n' % next_node_id)
-  # FIXME: make this real...
-  out.write('int main() { init(); enumerate(32); } \n')
+  def get_constant_buf(self, c):
+    buf_name, _ = self.const_bufs[c]
+    return buf_name
 
-# FIXME: also make it real
-def emit_solution_handler(configs, out):
-  out.write('void handle_solution(int num_evaluated, int _) {\n')
-  out.write('printf("found a solution at iter %lu!\\n", num_evaluated);\n')
-  for node_configs in configs:
-    if len(node_configs) == 0:
-      continue
-    node_id = node_configs[0].node_id
-    out.write('printf("%d = ");\n' % node_id)
-    for inst_config in node_configs:
+  def declare_buffers(self, out):
+    for buffers in self.buffers.values():
+      for _, buf_def in buffers:
+        out.write(buf_def)
+    for _, buf_def in self.livein_bufs.values():
+      out.write(buf_def)
+    for _, buf_def in self.const_bufs.values():
+      out.write(buf_def)
 
-      out.write('switch (%s) {\n' % inst_config.name)
-      for i, inst in enumerate(inst_config.options):
-        # FIXME: this ignores imm8
-        out.write('case %d: printf("%s "); break;\n' % (i, inst.name))
-      out.write('}\n') # end switch
+class SolutionHandler:
+  def __init__(self, name, g, sig2insts):
+    self.g = g
+    self.name = name
+    iterator_name = lambda i : 'op_%d' % i
+    with io.StringIO() as buf:
+      decl = 'static void %s(%s)' % (
+          name, 
+          ', '.join('int %s' % iterator_name(i) for i in range(len(g))))
+      # first tell the compiler not to inline the function
+      buf.write('%s __attribute__((noinline));\n' % decl)
+      # now define the handler
+      buf.write('%s {\n' % decl)
+      buf.write('printf("\\n");\n')
 
-      for arg_config in inst_config.args:
-          out.write('switch (%s) {\n' % arg_config.name)
-          for i, arg in enumerate(arg_config.options):
-            out.write('case %d: printf("%s "); break;\n' % (i, arg[2]))
-          out.write('}\n') # end switch
-    out.write('printf("\\n");\n')
+      for i, node in enumerate(g):
+        op_it = iterator_name(i)
 
-  #out.write('exit(1);\n')
+        # print the op
+        buf.write('switch (%s) {\n' % op_it)
+        for j, inst in enumerate(sig2insts[node.sig]):
+          buf.write(
+              'case {id}: printf("y{level} = {name} (imm8={imm8}) "); break;\n' 
+              .format(
+                id=j, 
+                level=node.level,
+                name=inst.name,
+                imm8=inst.imm8))
+        buf.write('}\n') # close the switch
 
-  out.write('}\n') # end func
+        # print the args
+        args = []
+        for arg in node.args:
+          if type(arg) == LiveInNode:
+            arg_name = str(arg.x)
+          else:
+            arg_name = 'y%d' % arg.level
+          args.append(arg_name)
+        buf.write('printf("%s\\n");\n' % ', '.join(args))
 
-def prune_graph(target_size, sketch_graph, sketch_nodes):
-  # do top sort
-  sorted_nodes = []
-  visited = set()
-  def topsort(v):
-    if v in visited:
+      buf.write('}\n') # close the function
+
+      self.defn = buf.getvalue()
+
+  def declare(self, out):
+    out.write(self.defn)
+
+  def handle(self, iterators):
+    return '%s(%s);\n' % (self.name, ', '.join(iterators))
+
+def prune_enum_history(enum_history, cert2graph, leaf_graphs): 
+  '''
+  remove nodes in `enum_history` that do not lead to graphs
+  '''
+  inverted_history = defaultdict(list)
+  for v, children in enum_history.items():
+    for w in children:
+      inverted_history[w].append(v)
+
+  alive_certs = set()
+  def visit(cert):
+    if cert in alive_certs:
       return
-    visited.add(v)
+    alive_certs.add(cert)
+    for parent_cert in inverted_history.get(cert, []):
+      visit(parent_cert)
 
-    is_leaf = v not in sketch_graph
-    if is_leaf:
-      sorted_nodes.append(v)
-      return
+  for cert in leaf_graphs.keys():
+    visit(cert)
 
-    for w in sketch_graph[v]:
-      topsort(w)
+  dead_certs = set(cert2graph.keys()) - alive_certs
+  for cert in dead_certs:
+    if cert in enum_history:
+      del enum_history[cert]
+    del cert2graph[cert]
 
-    sorted_nodes.append(v)
+  for cert in leaf_graphs:
+    assert cert in cert2graph
 
-  for v in sketch_graph:
-    topsort(v)
+def emit_enumerator(target_size, graphs, 
+    sig2insts, liveins, constants, 
+    enum_history, cert2graph,
+    out, max_tests=128):
+  func_tables = FuncTableSet(sig2insts)
+  allocator = BufferAllocator(graphs, liveins, constants)
+  soln_handlers = {
+      cert : SolutionHandler('handler_%d' % i, g, sig2insts)
+      for i, (cert, g) in enumerate(graphs.items())
+      }
 
-  # after this the src nodes of the dep graph will show up first
-  sorted_nodes.reverse()
+  # declare the handler functions
+  for handler in soln_handlers.values():
+    handler.declare(out)
 
-  # mapping nodes -> users
-  users = defaultdict(list)
-  for v in sorted_nodes:
-    is_leaf = v not in sketch_graph
-    # nothing to prune
-    if is_leaf:
-      continue
+  # declare the tables
+  for sig in sig2insts.keys():
+    out.write(func_tables.get_table_def(sig))
 
-    # the target output is always useful
-    useful_bitwidths = {target_size}
-    # figure out outputs that are potentially useful
-    for u in users[v]:
-      for inst_group in sketch_nodes[u].inst_groups:
-        for bitwidth in inst_group.input_sizes:
-          useful_bitwidths.add(bitwidth)
-    # drop an inst group if none of its output produce useful bitwidths
-    filtered_groups = [inst_group
-        for inst_group in sketch_nodes[v].inst_groups
-        if any(bw in useful_bitwidths for bw in inst_group.output_sizes)]
-    debug('DROPPED', len(sketch_nodes[v].inst_groups) - len(filtered_groups), 'NODES')
-    sketch_nodes[v].inst_groups[:] = filtered_groups
-    for w in sketch_graph[v]:
-      users[w].append(v)
+  # declare the buffers
+  allocator.declare_buffers(out)
+  out.write(declare_buffer('target', target_size, max_tests))
 
-def make_fully_connected_graph(liveins, insts, num_levels, constants=constant_pool):
-  # categorize the instructions by their signature first
+  # mapping node -> buffer
+  base_buffers = {}
+  for x in liveins:
+    base_buffers[LiveInNode(x)] = allocator.get_livein_buf(x)
+  for c in constants:
+    base_buffers[LiveInNode(c)] = allocator.get_constant_buf(c)
+
+  # mapping cert -> enumerator
+  enumerators = {
+      cert : ('enumerator_%d' % i)
+      for i, cert in enumerate(cert2graph.keys()) 
+      }
+  max_level = max(len(g) for g in graphs.values())
+  # declare the enumerators
+  for cert in cert2graph.keys():
+    out.write('static void %s(%s);\n' % (
+      enumerators[cert], ', '.join(itertools.repeat('int', max_level+1))))
+
+  # params of the enumerators
+  params = ['op_%d' % i for i in range(max_level)]
+
+  out.write('static unsigned long long num_enumerated = 0;\n')
+
+  # set of certificates that has a callee
+  called = set()
+
+  root_cert = None
+
+  # generate the functions that mirror the search tree
+  for cert, g in cert2graph.items():
+    out.write('static void {enumerator}(int num_tests, {params}) {{\n'
+        .format(
+          enumerator=enumerators[cert],
+          params=', '.join('int '+p for p in params)))
+    buffers = dict(base_buffers)
+
+    # figure out which buffer we should use
+    allocator.reset()
+    for node in g[:-1]:
+      # select a buffer to store the result of running the selected instruction
+      out_bitwidth = node.sig.outputs[0]
+      out_buf = allocator.allocate(out_bitwidth)
+      buffers[node] = out_buf
+
+    num_nodes = len(g)
+    if num_nodes > 0:
+      node = g[-1]
+      out.write('for (int op_mine = 0; op_mine < {num_insts}; op_mine++) {{\n'
+        .format(num_insts=len(sig2insts[node.sig])))
+
+      # select arguments for the selected instruction
+      args = [buffers[arg] for arg in node.args]
+
+      # select a buffer to store the result of running the selected instruction
+      out_bitwidth = node.sig.outputs[0]
+      out_buf = allocator.allocate(out_bitwidth)
+
+      # run it
+      arg_list = ['num_tests'] + args + [out_buf]
+      func_table = func_tables.get_table(node.sig)
+      out.write('int div_by_zero = {funcs}[op_mine]({args});\n'.format(
+        funcs=func_table,
+        args=', '.join(arg_list)))
+
+      # skip if divide by zero
+      out.write('if (div_by_zero) continue;\n')
+    else:
+      if root_cert is not None:
+        print(g)
+      assert root_cert is None
+      root_cert = cert
+
+    iterators = list(params)
+    if num_nodes > 0:
+      iterators[num_nodes-1] = 'op_mine'
+    # enumerate the children nodes
+    for next_cert in enum_history.get(cert, []):
+      # if next_cert is not in cert2graph then it's dead
+      if next_cert not in cert2graph or next_cert in called:
+        continue
+      called.add(next_cert)
+      out.write('{enumerator}(num_tests, {args});\n'
+          .format(
+            enumerator=enumerators[next_cert],
+            args=', '.join(iterators)))
+
+    if cert in soln_handlers:
+      out.write('if (memcmp(target, {out_buf}, {size}*num_tests) == 0)\n'
+          .format(
+            out_buf=out_buf,
+            size=bits2bytes(target_size)))
+      # check solution
+      out.write(soln_handlers[cert].handle(iterators))
+      out.write('num_enumerated ++;\n')
+
+    if num_nodes > 0:
+      out.write('}\n') # close the loop
+    out.write('}\n') # close the function
+
+  out.write('static void enumerate(int num_tests) {\n')
+  out.write('%s(num_tests, %s);\n' % (
+    enumerators[root_cert], ', '.join(itertools.repeat('0', max_level))))
+  out.write('}\n') # close enumerate
+
+class NodeIdManager:
+  def __init__(self, liveins, bitwidths, params):
+    self.liveins = list(liveins)
+    self.cumsum_bw = {}
+    self.cumsum_param = {}
+    self.partition = [{self.live_in_id(x) for x in liveins}]
+
+    s = len(self.liveins)
+    for bw, count in bitwidths.items():
+      self.cumsum_bw[bw] = s
+      self.partition.append(set(range(s, s+count)))
+      s += count
+
+    for param_id, count in params.items():
+      self.cumsum_param[param_id] = s
+      self.partition.append(set(range(s, s+count)))
+      s += count
+
+    self.num_nodes = s
+
+  def live_in_id(self, livein):
+    return self.liveins.index(livein)
+
+  def new_node_id(self, bitwidth):
+    id = self.cumsum_bw[bitwidth]
+    self.cumsum_bw[bitwidth] += 1
+    return id
+
+  def new_param_id(self, param_id):
+    id = self.cumsum_param[param_id]
+    self.cumsum_param[param_id] += 1
+    return id
+
+def classify_insts(insts):
   sig2insts = defaultdict(list)
 
-  # FIXME: we need to instantiate an instruction for every possible imm8 if it uses imm8
   for inst in insts:
-    input_types, out_sigs = sigs[inst.name]
+    input_types, out_sig = sigs[inst.name]
     comm_pairs = commutative_params.get(inst.name, [])
-    comm_pair = (None,)
+    comm_pair = None
     if len(comm_pairs) >= 1:
-      comm_pair = (tuple(comm_pairs[0]),)
-    sig_without_imm8 = (tuple(ty.bitwidth for ty in input_types if not ty.is_constant), out_sigs)
-    sig2insts[sig_without_imm8 + comm_pair].append(inst)
+      comm_pair = tuple(comm_pairs[0])
+    # don't consider imm8
+    input_sig = tuple(
+        ty.bitwidth for ty in input_types if not ty.is_constant)
+    sig = InstSignature(input_sig, out_sig, comm_pair)
+    sig2insts[sig].append(inst)
 
-  graph = {}
-  nodes = {}
+  return sig2insts
 
-  node_counter = 0
+def enumerate_graphs(
+  target_size, liveins, sig2insts, num_levels, constants):
+  '''
+  Given non-isomorphic insturctions
+    * modulo distinct instructions
+    * BUT with consideration to instruction signatures
+  '''
+  def get_node_id(node):
+    if type(node) == LiveInNode:
+      return id_manager.live_in_id(node.x)
+    node_bw = node.sig.outputs[0]
+    node_id = id_manager.inst_id(node.level, node_bw)
+    return node_id
 
-  available_bitwidths = set()
-  # create nodes for the liveins
-  for x, size in liveins:
-    available_bitwidths.add(size)
-    node_id = node_counter
-    node_counter += 1
-    nodes[node_id] = create_var_node(x, size)
+  def populate_adj(node, adj):
+    if type(node) == LiveInNode:
+      return
 
-  # create nodes for the constant pool
-  for val, size in constants:
-    available_bitwidths.add(size)
-    node_id = node_counter
-    node_counter += 1
-    const_name = 'const_%d_%d' % (val, size)
-    nodes[node_id] = create_var_node(const_name, size, val)
+    node_id = get_node_id(node)
+    assert node_id not in adj
+    adj[node_id] = []
+    comm_pair = node.sig.commutative_pair
+    for i, used in enumerate(node.args):
+      j = i
+      if comm_pair is not None and comm_pair[1] == i:
+        i == comm_pair[0]
+      used_id = get_node_id(used)
+      use_id = id_manager.param_id(node.level, i, j)
+      adj[node_id].append(use_id)
+      adj[use_id] = [used_id]
 
-  for _ in range(num_levels):
-    # nodes for current level
-    inst_groups = []
-    for (input_sizes, output_sizes, comm_pair), insts in sig2insts.items():
-      usable = all(bitwidth in available_bitwidths for bitwidth in input_sizes)
-      if not usable:
-        continue
+  def compute_certificate(g):
+    # mapping <bitwidth> -> <number of instruction with the bw>
+    bitwidths = defaultdict(int)
+    # mapping <param ids> -> <number of occurence>
+    params = defaultdict(int)
 
-      # we can use this category of instructions. make a group for it
-      inst_groups.append(InstGroup(insts, input_sizes, output_sizes, comm_pair))
+    for node in g:
+      bw = node.sig.outputs[0]
+      bitwidths[bw] += 1
 
-      for size in output_sizes:
-        available_bitwidths.add(size)
+      comm_pair = node.sig.commutative_pair
+      for param_id, used in enumerate(node.args):
+        if comm_pair is not None and comm_pair[1] == param_id:
+          param_id == comm_pair[0]
+        params[param_id] += 1
 
-    node_id = node_counter
-    # this is fully connected...
-    graph[node_id] = list(nodes.keys())
-    node_counter += 1
-    nodes[node_id] = create_inst_node(inst_groups)
+    id_manager = NodeIdManager(liveins+constants, bitwidths, params)
+    # level -> <node id>
+    node_ids = {}
+    def get_node_id(node):
+      if type(node) == LiveInNode:
+        return id_manager.live_in_id(node.x)
+      return node_ids[node.level]
 
-  return graph, nodes
+    adj = {}
+    for node in g:
+      assert node.level not in node_ids
+      bw = node.sig.outputs[0]
+      node_id = id_manager.new_node_id(bw)
+      node_ids[node.level] = node_id
+      uses = adj[node_id] = []
+      for param_id, used in enumerate(node.args):
+        if comm_pair is not None and comm_pair[1] == param_id:
+          param_id == comm_pair[0]
+        use_id = id_manager.new_param_id(param_id)
+        uses.append(use_id)
+        adj[use_id] = [get_node_id(used)]
+
+    nauty_graph = pynauty.Graph(
+        id_manager.num_nodes, 
+        directed=True,
+        adjacency_dict=adj,
+        vertex_coloring=id_manager.partition)
+
+    bw_cert = tuple(sorted(bitwidths.items()))
+    param_cert = tuple(sorted(params.items()))
+    graph_cert = pynauty.certificate(nauty_graph)
+    cert = bw_cert, param_cert, graph_cert
+    return cert
+
+  # mapping <cert of parent> -> <certs of children>
+  enum_history = defaultdict(list)
+  cert2graph = {}
+  empty_g = []
+  empty_cert = compute_certificate(empty_g)
+  cert2graph[empty_cert] = empty_g
+  def enum(level):
+    enumerated = set()
+
+    if level == 0:
+      base = [(empty_g, empty_cert)]
+    else:
+      base = enum(level-1)
+
+    # extend from the base set of non-isomorphic graphs
+    for g, base_cert in base:
+      # mapping bitwidth -> list of values of the bitwidth
+      available_bitwidths = defaultdict(list)
+      for x in (liveins+constants):
+        available_bitwidths[x.bitwidth].append(LiveInNode(x))
+      for node in g:
+        bw = node.sig.outputs[0]
+        available_bitwidths[bw].append(node)
+
+      for sig in sig2insts.keys():
+        # check if we can use instructions of this signature
+        usable = all(bw in available_bitwidths for bw in sig.inputs)
+        if not usable:
+          continue
+
+        arg_configs = [available_bitwidths[bw] for bw in sig.inputs]
+        for args in itertools.product(*arg_configs):
+          assert len(args) == len(sig.inputs)
+          new_node = InstNode(level, sig, args)
+          g_extended = g + [new_node]
+          cert = compute_certificate(g_extended)
+          if cert not in enumerated:
+            enumerated.add(cert)
+            enum_history[base_cert].append(cert)
+            cert2graph[cert] = g_extended
+            yield g_extended, cert
+
+  def is_valid_graph(g):
+    # the graph is valid only if
+    # 1) there is a single sink
+    # 2) sink has the target size
+    if g[-1].sig.outputs[0] != target_size:
+      return False
+
+    found_component = False
+    visited = set()
+    def visit(node):
+      if node.level in visited:
+        return
+      visited.add(node.level)
+      for used in node.args:
+        if type(used) == InstNode:
+          visit(used)
+
+    for node in reversed(g):
+      if not found_component:
+        visit(node)
+        found_component = True
+      elif node.level not in visited:
+        # found second component
+        return False
+    return True
+
+  enumerated = set()
+  def enumerator():
+    for g, cert in enum(num_levels-1):
+      if cert not in enumerated and is_valid_graph(g):
+        enumerated.add(cert)
+        yield g, cert
+  return enumerator(), enum_history, cert2graph
 
 def emit_assignment(var, bitwidth, val, i, out):
   mask = 255
@@ -421,62 +562,38 @@ def emit_assignment(var, bitwidth, val, i, out):
       ))
     val >>= 8
 
-def emit_init(target, liveins, out, test_inputs={}):
+def emit_init(target, liveins, constants, test_inputs, out):
   import random
-  vars = [z3.BitVec(var, size) for var, size, _ in liveins]
+  vars = {x : z3.BitVec(x.name, x.bitwidth) for x in liveins}
 
   out.write('void init() {\n')
   for i in range(32):
-    #a = random.randint(-(1<<16), 1<<16)
-    #b = random.randint(-(1<<16), 1<<16)
-    #soln = max(a,b)
-    #out.write('((int64_t *)x)[%d] = %d;\n' % (i, a))
-    #out.write('((int64_t *)y)[%d] = %d;\n' % (i, b))
-    #out.write('((int64_t *)target)[%d] = %d;\n' % (i, soln))
-
-    # generate random input
-    #inputs = [
-    #  # but use the fixed input val if it's a constant
-    #  const_val if const_val is not None else random.randint(0, (1<<size)-1)
-    #  for _, size, const_val in liveins]
-    inputs = []
-    for var, size, const_val in liveins:
-      if const_val is not None:
-        inputs.append(const_val)
+    values = {}
+    for x in liveins:
+      counter_examples = test_inputs.get(x, [])
+      if i < len(counter_examples):
+        val = counter_examples[i]
       else:
-        counter_examples = test_inputs.get(var, [])
-        if i < len(counter_examples):
-          inputs.append(counter_examples[i])
-        else:
-          inputs.append(random.randint(0, (1<<size)-1))
+        val = random.randint(0, (1<<x.bitwidth)-1)
+      values[x] = val
 
     if i < len(test_inputs.get('target', [])):
       soln = test_inputs['target'][i]
     else:
-      z3_inputs = [z3.BitVecVal(val, size) for val, (_, size, _) in zip(inputs, liveins)]
-      z3_soln = z3.simplify(z3.substitute(target, *zip(vars, z3_inputs)))
+      substitutions = [
+          (vars[x], z3.BitVecVal(values[x], x.bitwidth))
+          for x in liveins]
+      z3_soln = z3.simplify(z3.substitute(target, *substitutions))
       assert z3.is_const(z3_soln)
       soln = z3_soln.as_long()
 
     emit_assignment('target', target.size(), soln, i, out)
-    for input, (var, size, _) in zip(inputs, liveins):
-      emit_assignment(var, size, input, i, out)
+    for x, val in values.items():
+      emit_assignment(get_livein_buf_name(x), x.bitwidth, val, i, out)
+    for c in constants:
+      emit_assignment(get_const_buf_name(c), c.bitwidth, c.value, i, out)
     
   out.write('}\n')
-
-
-def p24(x, *_):
-  o1 = x-1 
-  o2 = o1 >> 1
-  o3 = o1 | o2
-  o4 = o3 >> 2
-  o5 = o3 | o4
-  o6 = o5 >> 4
-  o7 = o5 | o6
-  o8 = o7 >> 8
-  o9 = o7 | o8
-  o10 = o9 >> 16
-  return o10 + 1 
 
 def emit_inst_runners(sketch_nodes, out, h_out):
   emitted = set()
@@ -513,35 +630,18 @@ def emit_inst_runners(sketch_nodes, out, h_out):
 
         out.write('}\n') # end function
 
-def emit_everything(target, sketch_graph, sketch_nodes, out, test_inputs={}):
-  '''
-  target is an smt formula
-  '''
-  target_size = target.size()
-
-  prune_graph(target_size, sketch_graph, sketch_nodes)
-
-  emit_includes(out)
-  out.write('#include "insts.h"\n')
-  insts = set()
-  inst_evaluations, liveins, configs = emit_inst_evaluations(
-      target_size, sketch_graph, sketch_nodes, out)
-  emit_init(target, liveins, out, test_inputs=test_inputs)
-  emit_solution_handler(configs, out)
-  emit_enumerator(target_size, sketch_nodes, inst_evaluations, configs, out)
-
 if __name__ == '__main__':
   import sys
   insts = []
 
-  bw = 256
+  bw = 32
 
   for inst, (input_types, _) in sigs.items():
-    if sigs[inst][1][0] != 256:
-      continue
-
-    #if str(bw) not in inst or 'llvm' not in inst:
+    #if sigs[inst][1][0] != 256:
     #  continue
+
+    if str(bw) not in inst or 'llvm' not in inst:
+      continue
 
     #if 'llvm' not in inst:
     #  continue
@@ -574,15 +674,35 @@ if __name__ == '__main__':
   import random
   random.seed(42)
   random.shuffle(insts)
-  insts = insts[:32]
+  insts = insts[:100]
 
-  liveins = [('x', bw), ('y', bw)]#, ('z', bw)]
+  liveins = [Variable('x', bw), Variable('y', bw)]#, ('z', bw)]
+  constants = [Constant(1,32), Constant(0,32)]
   x, y, z = z3.BitVecs('x y z', bw)
-  target = z3.If(x >= y, x , y)
+  target = z3.If(x >= y, x, y)
 
-  g, nodes = make_fully_connected_graph(
-      liveins=liveins,
-      constants=[],
-      insts=insts,
-      num_levels=4)
-  emit_everything(target, g, nodes, sys.stdout)
+  sig2insts = classify_insts(insts)
+  graphs, enum_history, cert2graph = enumerate_graphs(
+      target.size(), liveins, sig2insts, 4, constants)
+  from tqdm import tqdm
+  unique_graphs = {}
+  for g, cert in tqdm(iter(graphs), total=1e9):
+    unique_graphs[cert] = g
+
+  prune_enum_history(enum_history, cert2graph, unique_graphs)
+
+  with open('t.c', 'w') as out:
+    out.write('#include "insts.h"\n')
+    emit_includes(out)
+    emit_enumerator(
+        target.size(),
+        unique_graphs, sig2insts, liveins, constants,
+        enum_history, cert2graph, out)
+    emit_init(target, liveins, constants, {}, out)
+    out.write('''
+int main() { 
+  init();
+  enumerate(32);
+  printf("num enumerated: %llu\n", num_enumerated); 
+}
+  ''')
