@@ -352,6 +352,13 @@ def compile_update(update, env, pred):
 
   lhs, _ = compile_expr(update.lhs, env, pred)
 
+  # propagate type from RHS
+  lhs_type = env.get_type(lhs.var)
+  env.set_type(lhs.var, 
+      lhs_type._replace(
+        is_float=lhs_type.is_float or rhs_type.is_float,
+        is_double=lhs_type.is_float or rhs_type.is_double))
+
   if sign_extending:
     lhs.mark_sign_extend()
 

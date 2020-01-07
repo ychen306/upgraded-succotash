@@ -23,20 +23,17 @@ def get_imm_mask(imm8, outs):
   '''
   # TODO: don't assume there is only one output
   y = outs[0]
-  mask = (1 << 9)-1
+  mask = (1 << 33)-1
   s = z3.Solver()
-  for i in range(8, 0, -1):
+  for i in range(33, 0, -1):
     cur_mask = (1<<(i+1))-1
     y_masked = z3.substitute(y, (imm8, imm8 & cur_mask))
-
-    s.push()
-    s.add(y_masked != y)
-    ok = s.check() == z3.unsat
-    s.pop()
+    ok = z3.is_true(z3.simplify(y_masked == y))
 
     if not ok:
       return mask
     mask = cur_mask
+  return mask
 
 def extract_float(bv, i, bitwidth):
   '''
@@ -71,8 +68,9 @@ def check_compiled_spec_with_examples(param_vals, outs, out_types, inputs, expec
   constraints = []
   for input, expected in zip(inputs, expected_outs):
     subs = [(param, z3.BitVecVal(x, param.size())) for param, x in zip(param_vals, input)]
-    outs_concrete = [z3.substitute(out, *subs)
+    outs_concrete = [z3.simplify(z3.substitute(out, *subs))
         for out in outs]
+    print(outs_concrete)
     constraints.append(
         z3.And([equal(z3.BitVecVal(y_expected, y.size()), y, out_type)
           for y_expected, y, out_type in zip(expected, outs_concrete, out_types)]))
@@ -100,6 +98,7 @@ def line_to_bitvec(line, ty):
 
   assert ty.bitwidth % 64 == 0
   components = [bits << (i * 64) for i, bits in enumerate(qwords)]
+  print('!!!!!1', functools.reduce(operator.or_, components, 0))
   return functools.reduce(operator.or_, components, 0)
 
 
@@ -436,22 +435,44 @@ if __name__ == '__main__':
   from intrinsic_types import IntegerType
 
   sema = '''
-<intrinsic tech='SSE2' vexEq='TRUE' dontShowZeroUnmodMsg='TRUE' rettype='int' name='_mm_extract_epi16'>
-	<type>Integer</type>
-	<CPUID>SSE2</CPUID>
-	<category>Swizzle</category>
-	<parameter varname='a' type='__m128i'/>
-	<parameter varname="imm8" type='int'/>
-	<description>Extract a 16-bit integer from "a", selected with "imm8", and store the result in the lower element of "dst".</description>
+<intrinsic tech='SSE4.1' vexEq='TRUE' rettype='__m128' name='_mm_dp_ps'>
+	<type>Floating Point</type>
+	<CPUID>SSE4.1</CPUID>
+	<category>Arithmetic</category>
+	<parameter varname='a' type='__m128'/>
+	<parameter varname='b' type='__m128'/>
+	<parameter varname="imm8" type='const int'/>
+	<description>Conditionally multiply the packed single-precision (32-bit) floating-point elements in "a" and "b" using the high 4 bits in "imm8", sum the four products, and conditionally store the sum in "dst" using the low 4 bits of "imm8".</description>
 	<operation>
-dst[15:0] := (a[127:0] &gt;&gt; (imm8[2:0] * 16))[15:0]
-dst[31:16] := 0
+DEFINE DP(a[127:0], b[127:0], imm8[7:0]) {
+	FOR j := 0 to 3
+		i := j*32
+		IF imm8[(4+j)%8]
+			temp[i+31:i] := a[i+31:i] * b[i+31:i]
+		ELSE
+			temp[i+31:i] := 0
+		FI
+	ENDFOR
+	
+	sum[31:0] := (temp[127:96] + temp[95:64]) + (temp[63:32] + temp[31:0])
+	
+	FOR j := 0 to 3
+		i := j*32
+		IF imm8[j%8]
+			tmpdst[i+31:i] := sum[31:0]
+		ELSE
+			tmpdst[i+31:i] := 0
+		FI
+	ENDFOR
+	RETURN tmpdst[127:0]
+}
+dst[127:0] := DP(a[127:0], b[127:0], imm8[7:0])
 	</operation>
-	<instruction name='pextrw' form='r32, xmm, imm'/>
-	<header>emmintrin.h</header>
+	<instruction name='dpps' form='xmm, xmm, imm'/>
+	<header>smmintrin.h</header>
 </intrinsic>
   '''
   intrin_node = ET.fromstring(sema)
   spec = get_spec_from_xml(intrin_node)
-  ok = fuzz_intrinsic(spec, num_tests=10)
+  ok = fuzz_intrinsic(spec, num_tests=32)
   print(ok)
