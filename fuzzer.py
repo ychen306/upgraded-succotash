@@ -70,7 +70,6 @@ def check_compiled_spec_with_examples(param_vals, outs, out_types, inputs, expec
     subs = [(param, z3.BitVecVal(x, param.size())) for param, x in zip(param_vals, input)]
     outs_concrete = [z3.simplify(z3.substitute(out, *subs))
         for out in outs]
-    print(outs_concrete)
     constraints.append(
         z3.And([equal(z3.BitVecVal(y_expected, y.size()), y, out_type)
           for y_expected, y, out_type in zip(expected, outs_concrete, out_types)]))
@@ -98,7 +97,6 @@ def line_to_bitvec(line, ty):
 
   assert ty.bitwidth % 64 == 0
   components = [bits << (i * 64) for i, bits in enumerate(qwords)]
-  print('!!!!!1', functools.reduce(operator.or_, components, 0))
   return functools.reduce(operator.or_, components, 0)
 
 
@@ -404,7 +402,7 @@ int main() {
     # TODO: add CPUIDs 
     try:
       subprocess.check_output(
-          'gcc %s -o %s -I%s %s/printers.o >/dev/null 2>/dev/null -mavx -mavx2 -march=native -mfma' % (
+          'clang %s -o %s -I%s %s/printers.o >/dev/null 2>/dev/null -mavx -mavx2 -march=native -mfma' % (
             outf.name, exe.name, src_path, src_path),
           shell=True)
     except subprocess.CalledProcessError:
