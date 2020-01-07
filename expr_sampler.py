@@ -2,7 +2,6 @@
 Sample a random expresison dag, input, and dump the I/O examples together with used instructions
 '''
 from collections import namedtuple, defaultdict
-from intrinsic_types import intrinsic_types
 from semas import semas
 from specs import specs
 import random
@@ -10,45 +9,14 @@ import z3
 from z3_utils import askey, eval_z3_expr
 from z3_exprs import *
 import json
+from sig import get_intrinsic_signature
 
 from synth_utils import get_usable_insts
-
-InputType = namedtuple('InputType', ['bitwidth', 'is_constant'])
 
 instantiated_insts = []
 with open('instantiated-insts.json') as f:
   for inst, imm8 in json.load(f):
     instantiated_insts.append((inst, imm8))
-
-def get_ctype_bitwidth(typename):
-  if typename.endswith('*'):
-    typename = typename[:-1].strip()
-  return intrinsic_types[typename].bitwidth
-
-def get_intrinsic_signature(spec):
-  '''
-  given spec, return ([<input type>], [<output size>])
-  '''
-  input_types = []
-  output_sizes = []
-  inst_form = spec.inst_form.split(', ')
-  no_imm8 = 'imm8' not in (param.name for param in spec.params)
-  for i, param in enumerate(spec.params):
-    bitwidth = get_ctype_bitwidth(param.type)
-
-    if ((no_imm8 and i < len(inst_form) and inst_form[i] == 'imm') or
-        param.name == 'imm8'):
-      input_types.append(InputType(bitwidth=bitwidth, is_constant=True))
-      continue
-
-    if param.type.endswith('*'):
-      output_sizes.append(bitwidth)
-    else:
-      input_types.append(InputType(bitwidth=bitwidth, is_constant=False))
-  if spec.rettype != 'void':
-    out_bitwidth = get_ctype_bitwidth(spec.rettype)
-    output_sizes = [out_bitwidth,] + output_sizes
-  return tuple(input_types), tuple(output_sizes)
 
 def categorize_by_output(sigs):
   '''

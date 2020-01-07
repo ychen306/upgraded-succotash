@@ -15,6 +15,29 @@ from spec_serializer import dump_spec, load_spec
 
 src_path = os.path.dirname(os.path.abspath(__file__))
 
+def get_imm_mask(imm8, outs):
+  '''
+  Given imm8 and the semantic of the outputs,
+  figure out a mask that identifies the bits of imm8
+  that are actually useful
+  '''
+  # TODO: don't assume there is only one output
+  y = outs[0]
+  mask = (1 << 9)-1
+  s = z3.Solver()
+  for i in range(8, 0, -1):
+    cur_mask = (1<<(i+1))-1
+    y_masked = z3.substitute(y, (imm8, imm8 & cur_mask))
+
+    s.push()
+    s.add(y_masked != y)
+    ok = s.check() == z3.unsat
+    s.pop()
+
+    if not ok:
+      return mask
+    mask = cur_mask
+
 def extract_float(bv, i, bitwidth):
   '''
   extract i'th float from bv
@@ -230,11 +253,13 @@ def get_temp_name():
   counter += 1
   return 'tmp%d' % counter
 
-def fuzz_intrinsic_once(outf, spec):
+def fuzz_intrinsic_once(outf, spec, sema):
   '''
   1) generate test (in C) that exercises the intrinsic
   2) run the interpreter per the spec and return the expected output
   '''
+  xs, ys = sema
+
   # generate random arguments
   c_vars = []
   arg_vals = []
@@ -246,7 +271,9 @@ def fuzz_intrinsic_once(outf, spec):
   for i, param in enumerate(spec.params):
     if ((no_imm8 and i < len(inst_form) and inst_form[i] == 'imm') or
         param.name == 'imm8'):
-      byte = random.randint(0, 255)
+      param_id = len(arg_vals)
+      mask = get_imm_mask(xs[param_id], ys)
+      byte = random.randint(0, 255) & mask
       c_vars.append(str(byte))
       arg_vals.append(Bits(uint=byte, length=8))
       continue
@@ -311,6 +338,8 @@ def fuzz_intrinsic(spec, num_tests=100):
   '''
   spec -> (spec correct, can compile)
   '''
+  param_vals, outs = compile(spec)
+  sema = param_vals, outs
   interpreted = []
   exe = NamedTemporaryFile(delete=False)
   exe.close()
@@ -359,7 +388,7 @@ int main() {
     x = []
     y = []
     for _ in range(num_tests):
-      arg_vals, out_param_types, has_return_val = fuzz_intrinsic_once(outf, spec)
+      arg_vals, out_param_types, has_return_val = fuzz_intrinsic_once(outf, spec, sema)
       out_types = [intrinsic_types[ty] for ty in out_param_types]
       if spec.rettype != 'void':
         out_types = [intrinsic_types[spec.rettype]] + out_types
@@ -396,7 +425,6 @@ int main() {
       outputs.append(line_to_bitvec(line, ty))
     y.append(outputs)
 
-  param_vals, outs = compile(spec)
   correct = check_compiled_spec_with_examples(param_vals, outs, out_types, x, y)
 
   return correct, True
@@ -408,45 +436,22 @@ if __name__ == '__main__':
   from intrinsic_types import IntegerType
 
   sema = '''
-<intrinsic tech="Other" rettype='unsigned int' name='_lzcnt_u32'>
+<intrinsic tech='SSE2' vexEq='TRUE' dontShowZeroUnmodMsg='TRUE' rettype='int' name='_mm_extract_epi16'>
 	<type>Integer</type>
-	<CPUID>LZCNT</CPUID>
-	<category>Bit Manipulation</category>
-	<parameter type='unsigned int' varname='a' />
-	<description>Count the number of leading zero bits in unsigned 32-bit integer "a", and return that count in "dst".</description>
+	<CPUID>SSE2</CPUID>
+	<category>Swizzle</category>
+	<parameter varname='a' type='__m128i'/>
+	<parameter varname="imm8" type='int'/>
+	<description>Extract a 16-bit integer from "a", selected with "imm8", and store the result in the lower element of "dst".</description>
 	<operation>
-tmp := 31
-dst := 0
-DO WHILE (tmp &gt;= 0 AND a[tmp] == 0)
-	tmp := tmp - 1
-	dst := dst + 1
-OD	
+dst[15:0] := (a[127:0] &gt;&gt; (imm8[2:0] * 16))[15:0]
+dst[31:16] := 0
 	</operation>
-	<instruction name='lzcnt' form='r32, r32'/>
-	<header>immintrin.h</header>
-</intrinsic>
-  '''
-  sema = '''
-<intrinsic tech='AVX2' rettype='__m256i' name='_mm256_maddubs_epi16'>
-	<type>Integer</type>
-	<CPUID>AVX2</CPUID>
-	<category>Arithmetic</category>
-	<parameter varname='a' type='__m256i'/>
-	<parameter varname='b' type='__m256i'/>
-	<description>Vertically multiply each unsigned 8-bit integer from "a" with the corresponding signed 8-bit integer from "b", producing intermediate signed 16-bit integers. Horizontally add adjacent pairs of intermediate signed 16-bit integers, and pack the saturated results in "dst".
-	</description>
-	<operation>
-FOR j := 0 to 15
-	i := j*16
-	dst[i+15:i] := Saturate_To_Int16( a[i+15:i+8]*b[i+15:i+8] + a[i+7:i]*b[i+7:i] )
-ENDFOR
-dst[MAX:256] := 0
-	</operation>
-	<instruction name='vpmaddubsw' form='ymm, ymm, ymm'/>
-	<header>immintrin.h</header>
+	<instruction name='pextrw' form='r32, xmm, imm'/>
+	<header>emmintrin.h</header>
 </intrinsic>
   '''
   intrin_node = ET.fromstring(sema)
   spec = get_spec_from_xml(intrin_node)
-  ok = fuzz_intrinsic(spec, num_tests=1)
+  ok = fuzz_intrinsic(spec, num_tests=10)
   print(ok)
