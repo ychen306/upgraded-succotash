@@ -33,7 +33,7 @@ for intrin in data_root.iter('intrinsic'):
   inst_form = inst.attrib['name'], inst.attrib.get('form')
   cpuid_text = 'Unknown'
   if cpuid is not None:
-    if cpuid.text in ('AES', 'SHA', 'MPX', 'KNCNI', 
+    if cpuid.text in ('MMX', 'AES', 'SHA', 'MPX', 'KNCNI', 
         'AVX512_4FMAPS', 'AVX512_BF16',
         'INVPCID', 'RTM', 'XSAVE', 
         'FSGSBASE', 'RDRAND', 'RDSEED'):
