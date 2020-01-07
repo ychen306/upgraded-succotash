@@ -289,8 +289,10 @@ def emit_enumerator(target_size, graphs,
     num_nodes = len(g)
     if num_nodes > 0:
       node = g[-1]
-      out.write('for (int op_mine = 0; op_mine < {num_insts}; op_mine++) {{\n'
-        .format(num_insts=len(sig2insts[node.sig])))
+      out.write('volatile int n_volatile;\n')
+      out.write('n_volatile = %s;\n' % len(sig2insts[node.sig]))
+      out.write('int n = n_volatile;\n')
+      out.write('for (int op_mine = 0; op_mine < n; op_mine++) {\n')
 
       # select arguments for the selected instruction
       args = [buffers[arg] for arg in node.args]
@@ -309,8 +311,6 @@ def emit_enumerator(target_size, graphs,
       # skip if divide by zero
       out.write('if (__builtin_expect(div_by_zero, 0)) { num_enumerated++; continue; }\n')
     else:
-      if root_cert is not None:
-        print(g)
       assert root_cert is None
       root_cert = cert
 
@@ -347,15 +347,15 @@ def emit_enumerator(target_size, graphs,
   out.write('}\n') # close enumerate
 
 class NodeIdManager:
-  def __init__(self, liveins, bitwidths, params):
+  def __init__(self, liveins, sig_counts, params):
     self.liveins = list(liveins)
-    self.cumsum_bw = {}
+    self.cumsum_sig = {}
     self.cumsum_param = {}
-    self.partition = [{self.live_in_id(x) for x in liveins}]
+    self.partition = [{self.live_in_id(x)} for x in liveins]
 
     s = len(self.liveins)
-    for bw, count in bitwidths.items():
-      self.cumsum_bw[bw] = s
+    for sig, count in sig_counts.items():
+      self.cumsum_sig[sig] = s
       self.partition.append(set(range(s, s+count)))
       s += count
 
@@ -369,9 +369,9 @@ class NodeIdManager:
   def live_in_id(self, livein):
     return self.liveins.index(livein)
 
-  def new_node_id(self, bitwidth):
-    id = self.cumsum_bw[bitwidth]
-    self.cumsum_bw[bitwidth] += 1
+  def new_node_id(self, sig):
+    id = self.cumsum_sig[sig]
+    self.cumsum_sig[sig] += 1
     return id
 
   def new_param_id(self, param_id):
@@ -385,7 +385,7 @@ def classify_insts(insts):
   for inst in insts:
     input_types, out_sig = sigs[inst.name]
     comm_pairs = commutative_params.get(inst.name, [])
-    comm_pair = None
+    comm_pair = (-1,-1)
     if len(comm_pairs) >= 1:
       comm_pair = tuple(comm_pairs[0])
     # don't consider imm8
@@ -410,24 +410,9 @@ def enumerate_graphs(
     node_id = id_manager.inst_id(node.level, node_bw)
     return node_id
 
-  def populate_adj(node, adj):
-    if type(node) == LiveInNode:
-      return
-
-    node_id = get_node_id(node)
-    assert node_id not in adj
-    adj[node_id] = []
-    comm_pair = node.sig.commutative_pair
-    for i, used in enumerate(node.args):
-      j = i
-      if comm_pair is not None and comm_pair[1] == i:
-        i == comm_pair[0]
-      used_id = get_node_id(used)
-      use_id = id_manager.param_id(node.level, i, j)
-      adj[node_id].append(use_id)
-      adj[use_id] = [used_id]
-
   def compute_certificate(g):
+    # mapping <sig> -> <number of nodes with the sig>
+    sig_counts = defaultdict(int)
     # mapping <bitwidth> -> <number of instruction with the bw>
     bitwidths = defaultdict(int)
     # mapping <param ids> -> <number of occurence>
@@ -436,14 +421,15 @@ def enumerate_graphs(
     for node in g:
       bw = node.sig.outputs[0]
       bitwidths[bw] += 1
+      sig_counts[node.sig] += 1
 
       comm_pair = node.sig.commutative_pair
       for param_id, used in enumerate(node.args):
-        if comm_pair is not None and comm_pair[1] == param_id:
-          param_id == comm_pair[0]
+        if comm_pair[1] == param_id:
+          param_id = comm_pair[0]
         params[param_id] += 1
 
-    id_manager = NodeIdManager(liveins+constants, bitwidths, params)
+    id_manager = NodeIdManager(liveins+constants, sig_counts, params)
     # level -> <node id>
     node_ids = {}
     def get_node_id(node):
@@ -454,13 +440,14 @@ def enumerate_graphs(
     adj = {}
     for node in g:
       assert node.level not in node_ids
-      bw = node.sig.outputs[0]
-      node_id = id_manager.new_node_id(bw)
+      node_id = id_manager.new_node_id(node.sig)
       node_ids[node.level] = node_id
       uses = adj[node_id] = []
+      comm_pair = node.sig.commutative_pair
       for param_id, used in enumerate(node.args):
-        if comm_pair is not None and comm_pair[1] == param_id:
-          param_id == comm_pair[0]
+        if comm_pair[1] == param_id:
+          assert comm_pair[1] > comm_pair[0]
+          param_id = comm_pair[0]
         use_id = id_manager.new_param_id(param_id)
         uses.append(use_id)
         adj[use_id] = [get_node_id(used)]
@@ -471,10 +458,12 @@ def enumerate_graphs(
         adjacency_dict=adj,
         vertex_coloring=id_manager.partition)
 
+    sig_cert = tuple(sorted(sig_counts.items()))
     bw_cert = tuple(sorted(bitwidths.items()))
     param_cert = tuple(sorted(params.items()))
     graph_cert = pynauty.certificate(nauty_graph)
-    cert = bw_cert, param_cert, graph_cert
+    cert = sig_cert, graph_cert
+    cert = sig_cert, graph_cert
     return cert
 
   # mapping <cert of parent> -> <certs of children>
@@ -528,6 +517,7 @@ def enumerate_graphs(
 
     found_component = False
     visited = set()
+    used_live_ins = set()
     def visit(node):
       if node.level in visited:
         return
@@ -535,6 +525,8 @@ def enumerate_graphs(
       for used in node.args:
         if type(used) == InstNode:
           visit(used)
+        elif type(used.x) == Variable:
+          used_live_ins.add(used.x)
 
     for node in reversed(g):
       if not found_component:
@@ -543,13 +535,13 @@ def enumerate_graphs(
       elif node.level not in visited:
         # found second component
         return False
-    return True
+    return len(used_live_ins) == len(liveins)
 
-  enumerated = set()
+  seen = set()
   def enumerator():
     for g, cert in enum(num_levels-1):
-      if cert not in enumerated and is_valid_graph(g):
-        enumerated.add(cert)
+      if cert not in seen and is_valid_graph(g):
+        seen.add(cert)
         yield g, cert
   return enumerator(), enum_history, cert2graph
 
@@ -633,14 +625,14 @@ if __name__ == '__main__':
   import sys
   insts = []
 
-  bw = 256
+  bw = 32
 
   for inst, (input_types, _) in sigs.items():
-    if sigs[inst][1][0] != 256:
-      continue
-
-    #if str(bw) not in inst or 'llvm' not in inst:
+    #if sigs[inst][1][0] != 256:
     #  continue
+
+    if str(bw) not in inst or 'llvm' not in inst:
+      continue
 
     #if 'llvm' not in inst:
     #  continue
@@ -674,11 +666,29 @@ if __name__ == '__main__':
   random.seed(42)
   random.shuffle(insts)
   insts = insts[:30]
+  insts = [
+    ConcreteInst('bvnot32', None),
+    ConcreteInst('llvm_Xor_32', None), # bvxor
+    ConcreteInst('llvm_And_32', None), # bvand
+    ConcreteInst('llvm_Or_32', None), # bvor
+    ConcreteInst('bvneg', None),
+    ConcreteInst('llvm_Add_32', None), # bvadd
+    ConcreteInst('llvm_Mul_32', None), # bvmul
+    ConcreteInst('llvm_UDiv_32', None), # bvudiv
+    ConcreteInst('llvm_URem_32', None), # bvurem
+    ConcreteInst('llvm_LShr_32', None), # bvlshr
+    ConcreteInst('llvm_AShr_32', None), # bvashr
+    ConcreteInst('llvm_Shl_32', None), # bvshl
+    ConcreteInst('llvm_SDiv_32', None), # bvsdiv
+    ConcreteInst('llvm_SRem_32', None), # bvsrem
+    ConcreteInst('llvm_Sub_32', None), # bvsub
+    ]
 
-  liveins = [Variable('x', bw), Variable('y', bw)]#, ('z', bw)]
-  constants = [Constant(1,256), Constant(0,256)]
+  liveins = [Variable('x', bw)]#, Variable('y', bw)]#, ('z', bw)]
+  constants = [Constant(1,bw), Constant(0,bw)]
   x, y, z = z3.BitVecs('x y z', bw)
   target = z3.If(x >= y, x, y)
+  target = x & (1 + (x|(x-1)))
 
   sig2insts = classify_insts(insts)
   graphs, enum_history, cert2graph = enumerate_graphs(

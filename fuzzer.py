@@ -433,41 +433,19 @@ if __name__ == '__main__':
   from intrinsic_types import IntegerType
 
   sema = '''
-<intrinsic tech='SSE4.1' vexEq='TRUE' rettype='__m128' name='_mm_dp_ps'>
+<intrinsic tech='SSE3' vexEq='TRUE' rettype='__m128d' name='_mm_movedup_pd'>
 	<type>Floating Point</type>
-	<CPUID>SSE4.1</CPUID>
-	<category>Arithmetic</category>
-	<parameter varname='a' type='__m128'/>
-	<parameter varname='b' type='__m128'/>
-	<parameter varname="imm8" type='const int'/>
-	<description>Conditionally multiply the packed single-precision (32-bit) floating-point elements in "a" and "b" using the high 4 bits in "imm8", sum the four products, and conditionally store the sum in "dst" using the low 4 bits of "imm8".</description>
+	<CPUID>SSE3</CPUID>
+	<category>Move</category>
+	<parameter varname='a' type='__m128d'/>
+	<description>Duplicate the low double-precision (64-bit) floating-point element from "a", and store the results in "dst".
+	</description>
 	<operation>
-DEFINE DP(a[127:0], b[127:0], imm8[7:0]) {
-	FOR j := 0 to 3
-		i := j*32
-		IF imm8[(4+j)%8]
-			temp[i+31:i] := a[i+31:i] * b[i+31:i]
-		ELSE
-			temp[i+31:i] := 0
-		FI
-	ENDFOR
-	
-	sum[31:0] := (temp[127:96] + temp[95:64]) + (temp[63:32] + temp[31:0])
-	
-	FOR j := 0 to 3
-		i := j*32
-		IF imm8[j%8]
-			tmpdst[i+31:i] := sum[31:0]
-		ELSE
-			tmpdst[i+31:i] := 0
-		FI
-	ENDFOR
-	RETURN tmpdst[127:0]
-}
-dst[127:0] := DP(a[127:0], b[127:0], imm8[7:0])
+tmp[63:0] := a[63:0]
+tmp[127:64] := a[63:0]
 	</operation>
-	<instruction name='dpps' form='xmm, xmm, imm'/>
-	<header>smmintrin.h</header>
+	<instruction name='movddup' form='xmm, xmm'/>
+	<header>pmmintrin.h</header>
 </intrinsic>
   '''
   intrin_node = ET.fromstring(sema)
