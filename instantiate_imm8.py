@@ -50,7 +50,10 @@ def instantiate_with_imm8(inst, semas, sigs):
         break
       elif len(params) == 2:
         x1, x2 = params
-        if prove(specialized_y == z3.simplify(z3.substitute(y2, (x1,x2), (x2,x1)))):
+        same_type = x1.sort() == x2.sort()
+        if same_type and prove(
+            specialized_y ==
+            z3.simplify(z3.substitute(y2, (x1,x2), (x2,x1)))):
           redundant = True
           break
     if not redundant:
@@ -68,4 +71,4 @@ if __name__ == '__main__':
   for inst in tqdm(insts):
     concrete_insts.extend(instantiate_with_imm8(inst, semas=semas, sigs=sigs))
   with open('instantiated-insts.json', 'w') as f:
-    json.dump(concrete_insts, f)
+    json.dump(concrete_insts, f, indent=1)

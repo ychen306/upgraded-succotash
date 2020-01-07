@@ -1,5 +1,5 @@
 from intrinsic_types import intrinsic_types
-from collections import nameduptle
+from collections import namedtuple
 
 InputType = namedtuple('InputType', ['bitwidth', 'is_constant'])
 

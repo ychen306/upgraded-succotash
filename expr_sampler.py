@@ -9,7 +9,7 @@ import z3
 from z3_utils import askey, eval_z3_expr
 from z3_exprs import *
 import json
-from sig import get_intrinsic_signature
+from sig import get_intrinsic_signature, InputType
 
 from synth_utils import get_usable_insts
 
