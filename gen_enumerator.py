@@ -178,7 +178,7 @@ class InstEnumerator:
   '''
   def __init__(self, func_table, insts, args, out_buf, out_size, target_size):
     self.func_table = func_table
-    self.name = 'enumerate_%s' % func_table
+    self.name = 'enumerate_%s_%s_%s' % (func_table, '_'.join(args), out_buf)
     self.args = args
     self.out_buf = out_buf
     self.out_size = out_size
@@ -215,11 +215,11 @@ class InstEnumerator:
     #### check ###
     out.write('static bool check(int num_tests) {\n')
     if self.out_size == self.target_size:
-      out.write('return memcmp(target, {out_buf}, {size}*num_tests) == 0;'
+      out.write('return fast_memcmp(target, {out_buf}, {size}*num_tests);'
           .format(out_buf=self.out_buf, size=bits2bytes(self.target_size)))
     else:
       out.write('return false;\n')
-    out.write('}')
+    out.write('}\n')
 
     #### handle_solution ####
     out.write('static void solution_handler(int i) {\n')
@@ -234,8 +234,8 @@ class InstEnumerator:
           out.write('printf("/%s ");\n' % inst.imm8)
         out.write('printf(" "); break;\n')
 
-      out.write('printf("%s");\n' % ', '.join(self.args))
       out.write('}\n') # end switch
+      out.write('printf("%s\\n");\n' % ', '.join(self.args))
     out.write('}\n')
 
     out.write('};\n') # end struct
@@ -328,7 +328,7 @@ struct EnumNode {
       root_cert = cert
       # func_table, insts, args, out_buf, out_size, target_size
       inst_enumerator = InstEnumerator(
-          'root', [], None, None, None, target_size)
+          'root', [], [], None, None, target_size)
       root_inst_enumerator = inst_enumerator
 
     if inst_enumerator.name not in inst_enumerators:
@@ -470,10 +470,7 @@ def enumerate_graphs(
         vertex_coloring=id_manager.partition)
 
     sig_cert = tuple(sorted(sig_counts.items()))
-    bw_cert = tuple(sorted(bitwidths.items()))
-    param_cert = tuple(sorted(params.items()))
     graph_cert = pynauty.certificate(nauty_graph)
-    cert = sig_cert, graph_cert
     cert = sig_cert, graph_cert
     return cert
 
@@ -600,6 +597,8 @@ def emit_inst_runners(insts, out, h_out):
   sig2insts = classify_insts(insts)
   emitted = set()
 
+  h_out.write('extern "C" {\n')
+
   for sig, insts in sig2insts.items():
     num_inputs = len(sig.inputs)
     num_outputs = len(sig.outputs)
@@ -628,6 +627,8 @@ def emit_inst_runners(insts, out, h_out):
       out.write('return 0;\n') # report we didn't encounter div-by-zero
 
       out.write('}\n') # end function
+
+  h_out.write('}\n') # close extern "C"
 
 if __name__ == '__main__':
   import sys
