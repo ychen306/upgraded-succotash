@@ -139,57 +139,6 @@ class BufferAllocator:
     for _, buf_def in self.const_bufs.values():
       out.write(buf_def)
 
-class SolutionHandler:
-  def __init__(self, name, g, sig2insts):
-    self.g = g
-    self.name = name
-    iterator_name = lambda i : 'op_%d' % i
-    with io.StringIO() as buf:
-      decl = 'static void %s(%s)' % (
-          name, 
-          ', '.join('int %s' % iterator_name(i) for i in range(len(g))))
-      # first tell the compiler not to inline the function
-      buf.write('%s __attribute__((noinline));\n' % decl)
-      # now define the handler
-      buf.write('%s {\n' % decl)
-      buf.write('printf("\\n");\n')
-
-      for i, node in enumerate(g):
-        op_it = iterator_name(i)
-
-        # print the op
-        buf.write('switch (%s) {\n' % op_it)
-        for j, inst in enumerate(sig2insts[node.sig]):
-          buf.write(
-              'case {id}: printf("y{level} = {name} (imm8={imm8}) "); break;\n' 
-              .format(
-                id=j, 
-                level=node.level,
-                name=inst.name,
-                imm8=inst.imm8))
-        buf.write('}\n') # close the switch
-
-        # print the args
-        args = []
-        for arg in node.args:
-          if type(arg) == LiveInNode:
-            v, _ = arg.x
-            arg_name = str(v)
-          else:
-            arg_name = 'y%d' % arg.level
-          args.append(arg_name)
-        buf.write('printf("%s\\n");\n' % ', '.join(args))
-
-      buf.write('}\n') # close the function
-
-      self.defn = buf.getvalue()
-
-  def declare(self, out):
-    out.write(self.defn)
-
-  def handle(self, iterators):
-    return '%s(%s);\n' % (self.name, ', '.join(iterators))
-
 def prune_enum_history(enum_history, cert2graph, leaf_graphs): 
   '''
   remove nodes in `enum_history` that do not lead to graphs
@@ -219,24 +168,90 @@ def prune_enum_history(enum_history, cert2graph, leaf_graphs):
   for cert in leaf_graphs:
     assert cert in cert2graph
 
+class InstEnumerator:
+  '''
+  an enum_node is characterized by the following information:
+    * inst table or equivalently the signature
+    * args
+    * out
+    * children nodes
+  '''
+  def __init__(self, func_table, insts, args, out_buf, out_size, target_size):
+    self.func_table = func_table
+    self.name = 'enumerate_%s' % func_table
+    self.args = args
+    self.out_buf = out_buf
+    self.out_size = out_size
+    self.target_size = target_size
+    self.insts = insts
+
+  def emit(self, out):
+    out.write('struct %s {\n' % self.name)
+
+    ##### num_insts #####
+    num_insts = len(self.insts)
+    out.write('static inline int num_insts() {\n')
+    out.write('return %d;\n' % num_insts)
+    out.write('}\n')
+
+    #### has_insts ####
+    out.write('static inline bool has_insts() {\n')
+    out.write('return %s;\n' % ('true' if num_insts > 0 else 'false'))
+    out.write('}\n')
+    
+    #### run_inst ####
+    out.write('static int run_inst(int num_tests, int i) {\n')
+    if num_insts > 0:
+      out.write('return {func_table}[i](num_tests, {args}, {out_buf});\n'
+          .format(
+            func_table=self.func_table,
+            args=', '.join(self.args),
+            out_buf=self.out_buf
+            ))
+    else:
+      out.write('return 0;\n')
+    out.write('}\n')
+
+    #### check ###
+    out.write('static bool check(int num_tests) {\n')
+    if self.out_size == self.target_size:
+      out.write('return memcmp(target, {out_buf}, {size}*num_tests) == 0;'
+          .format(out_buf=self.out_buf, size=bits2bytes(self.target_size)))
+    else:
+      out.write('return false;\n')
+    out.write('}')
+
+    #### handle_solution ####
+    out.write('static void solution_handler(int i) {\n')
+    if num_insts > 0:
+      out.write('printf("%s = ");\n' % self.out_buf)
+
+      out.write('switch (i) {\n')
+      for i, inst in enumerate(self.insts):
+        out.write('case %d: ' % i)
+        out.write('printf("%s");\n' % inst.name)
+        if inst.imm8 is not None:
+          out.write('printf("/%s ");\n' % inst.imm8)
+        out.write('printf(" "); break;\n')
+
+      out.write('printf("%s");\n' % ', '.join(self.args))
+      out.write('}\n') # end switch
+    out.write('}\n')
+
+    out.write('};\n') # end struct
+
 def emit_enumerator(target_size, graphs, 
     sig2insts, liveins, constants, 
     enum_history, cert2graph,
     out, max_tests=128):
   func_tables = FuncTableSet(sig2insts)
   allocator = BufferAllocator(graphs, liveins, constants)
-  soln_handlers = {
-      cert : SolutionHandler('handler_%d' % i, g, sig2insts)
-      for i, (cert, g) in enumerate(graphs.items())
-      }
-
-  # declare the handler functions
-  for handler in soln_handlers.values():
-    handler.declare(out)
 
   # declare the tables
   for sig in sig2insts.keys():
     out.write(func_tables.get_table_def(sig))
+
+  out.write('static unsigned long long num_enumerated = 0;\n')
 
   # declare the buffers
   allocator.declare_buffers(out)
@@ -249,33 +264,42 @@ def emit_enumerator(target_size, graphs,
   for c in constants:
     base_buffers[LiveInNode(c)] = allocator.get_constant_buf(c)
 
-  # mapping cert -> enumerator
-  enumerators = {
-      cert : ('enumerator_%d' % i)
+  # mapping cert -> enum_node
+  enum_nodes = {
+      cert : ('enum_node_%d' % i)
       for i, cert in enumerate(cert2graph.keys()) 
       }
   max_level = max(len(g) for g in graphs.values())
-  # declare the enumerators
-  for cert in cert2graph.keys():
-    out.write('static void %s(%s);\n' % (
-      enumerators[cert], ', '.join(itertools.repeat('int', max_level+1))))
 
-  # params of the enumerators
+  # declare solution_handlers
+  out.write('void (*solution_handlers[%d])(int);\n' % max_level)
+  out.write('int solution[%d];\n' % max_level)
+
+  # forward declare enum nodes
+  out.write('''
+struct EnumNode {
+  void (*enumerate)(int num_tests, const EnumNode *, int depth);
+  int num_children;
+  EnumNode *children[128];
+};
+''')
+  for cert in cert2graph.keys():
+    out.write('extern EnumNode %s;\n' % enum_nodes[cert])
+
+  out.write('#include "enum_node.h"\n')
+
+  # params of the enum_nodes
   params = ['op_%d' % i for i in range(max_level)]
 
-  out.write('static unsigned long long num_enumerated = 0;\n')
-
   # set of certificates that has a callee
-  called = set()
+  has_parent = set()
 
   root_cert = None
 
+  inst_enumerators = {}
+
   # generate the functions that mirror the search tree
   for cert, g in cert2graph.items():
-    out.write('static void {enumerator}(int num_tests, {params}) {{\n'
-        .format(
-          enumerator=enumerators[cert],
-          params=', '.join('int '+p for p in params)))
     buffers = dict(base_buffers)
 
     # figure out which buffer we should use
@@ -289,11 +313,6 @@ def emit_enumerator(target_size, graphs,
     num_nodes = len(g)
     if num_nodes > 0:
       node = g[-1]
-      out.write('volatile int n_volatile;\n')
-      out.write('n_volatile = %s;\n' % len(sig2insts[node.sig]))
-      out.write('int n = n_volatile;\n')
-      out.write('for (int op_mine = 0; op_mine < n; op_mine++) {\n')
-
       # select arguments for the selected instruction
       args = [buffers[arg] for arg in node.args]
 
@@ -301,49 +320,41 @@ def emit_enumerator(target_size, graphs,
       out_bitwidth = node.sig.outputs[0]
       out_buf = allocator.allocate(out_bitwidth)
 
-      # run it
-      arg_list = ['num_tests'] + args + [out_buf]
-      func_table = func_tables.get_table(node.sig)
-      out.write('int div_by_zero = {funcs}[op_mine]({args});\n'.format(
-        funcs=func_table,
-        args=', '.join(arg_list)))
-
-      # skip if divide by zero
-      out.write('if (__builtin_expect(div_by_zero, 0)) { num_enumerated++; continue; }\n')
+      inst_enumerator = InstEnumerator(
+          func_tables.get_table(node.sig), sig2insts[node.sig], args, out_buf,
+          out_bitwidth, target_size)
     else:
       assert root_cert is None
       root_cert = cert
+      # func_table, insts, args, out_buf, out_size, target_size
+      inst_enumerator = InstEnumerator(
+          'root', [], None, None, None, target_size)
+      root_inst_enumerator = inst_enumerator
 
-    iterators = list(params)
-    if num_nodes > 0:
-      iterators[num_nodes-1] = 'op_mine'
-    # enumerate the children nodes
+    if inst_enumerator.name not in inst_enumerators:
+      inst_enumerators[inst_enumerator.name] = inst_enumerator
+      inst_enumerator.emit(out)
+
+    next_nodes = []
     for next_cert in enum_history.get(cert, []):
       # if next_cert is not in cert2graph then it's dead
-      if next_cert not in cert2graph or next_cert in called:
+      if next_cert not in cert2graph or next_cert in has_parent:
         continue
-      called.add(next_cert)
-      out.write('{enumerator}(num_tests, {args});\n'
-          .format(
-            enumerator=enumerators[next_cert],
-            args=', '.join(iterators)))
+      has_parent.add(next_cert)
+      next_nodes.append('&'+enum_nodes[next_cert])
 
-    if cert in soln_handlers:
-      out.write('if (bcmp(target, {out_buf}, {size}*num_tests) == 0)\n'
-          .format(
-            out_buf=out_buf,
-            size=bits2bytes(target_size)))
-      # check solution
-      out.write(soln_handlers[cert].handle(iterators))
-      out.write('num_enumerated ++;\n')
+    num_next_nodes = len(next_nodes)
 
-    if num_nodes > 0:
-      out.write('}\n') # close the loop
-    out.write('}\n') # close the function
+    # declare/init the enum node
+    out.write('EnumNode %s = {\n' % enum_nodes[cert])
+    out.write('&enum_insts<%s>,\n' % inst_enumerator.name)
+    out.write('%d,\n' % num_next_nodes)
+    out.write('{ %s }\n' % ', '.join(next_nodes))
+    out.write('};\n')
 
   out.write('static void enumerate(int num_tests) {\n')
-  out.write('%s(num_tests, %s);\n' % (
-    enumerators[root_cert], ', '.join(itertools.repeat('0', max_level))))
+  out.write('{root_node}.enumerate(num_tests, &{root_node}, 0);\n'
+      .format(root_node=enum_nodes[root_cert]))
   out.write('}\n') # close enumerate
 
 class NodeIdManager:
@@ -473,8 +484,6 @@ def enumerate_graphs(
   empty_cert = compute_certificate(empty_g)
   cert2graph[empty_cert] = empty_g
   def enum(level):
-    enumerated = set()
-
     if level == 0:
       base = [(empty_g, empty_cert)]
     else:
@@ -502,8 +511,7 @@ def enumerate_graphs(
           new_node = InstNode(level, sig, args)
           g_extended = g + [new_node]
           cert = compute_certificate(g_extended)
-          if cert not in enumerated:
-            enumerated.add(cert)
+          if cert not in cert2graph:
             enum_history[base_cert].append(cert)
             cert2graph[cert] = g_extended
             yield g_extended, cert
@@ -690,9 +698,11 @@ if __name__ == '__main__':
   target = z3.If(x >= y, x, y)
   target = x & (1 + (x|(x-1)))
 
+  num_levels = 4
+
   sig2insts = classify_insts(insts)
   graphs, enum_history, cert2graph = enumerate_graphs(
-      target.size(), liveins, sig2insts, 4, constants)
+      target.size(), liveins, sig2insts, num_levels, constants)
   from tqdm import tqdm
   unique_graphs = {}
   for g, cert in tqdm(iter(graphs), total=1e9):
@@ -700,7 +710,7 @@ if __name__ == '__main__':
 
   prune_enum_history(enum_history, cert2graph, unique_graphs)
 
-  with open('t.c', 'w') as out:
+  with open('t.cc', 'w') as out:
     out.write('#include "insts.h"\n')
     emit_includes(out)
     emit_enumerator(
