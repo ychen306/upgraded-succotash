@@ -7,13 +7,15 @@ static void handle_solution(int depth) {
 
 static bool memcmp_256bit_eq_u(const void *str1, const void *str2, size_t count)
 {
-  const __m256i *s1 = (__m256i*)str1;
-  const __m256i *s2 = (__m256i*)str2;
+  const __m256i *s1 = (__m256i *)__builtin_assume_aligned(str1, 64);
+  const __m256i *s2 = (__m256i *)__builtin_assume_aligned(str2, 64);
 
   while (count--)
   {
-    __m256i item1 = _mm256_lddqu_si256(s1++);
-    __m256i item2 = _mm256_lddqu_si256(s2++);
+    s1 = (__m256i *)__builtin_assume_aligned(s1, 64);
+    s2 = (__m256i *)__builtin_assume_aligned(s2, 64);
+    __m256i item1 = _mm256_load_si256(s1++);
+    __m256i item2 = _mm256_load_si256(s2++);
     __m256i result = _mm256_cmpeq_epi64(item1, item2);
     // cmpeq returns 0xFFFFFFFFFFFFFFFF per 64-bit portion where equality is
     // true, and 0 per 64-bit portion where false
@@ -39,8 +41,6 @@ void enum_insts(int num_tests, const EnumNode *node, int depth) {
   if (InstEnumerator::has_insts()) {
     for (int i = 0; i < num_insts; i++) {
       int div_by_zero = InstEnumerator::run_inst(num_tests, i);
-      if (depth == 4)
-        num_enumerated += 1;
 
       num_enumerated += 1;
       if (__builtin_expect(div_by_zero, 0))
