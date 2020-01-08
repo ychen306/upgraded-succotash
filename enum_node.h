@@ -42,6 +42,7 @@ void enum_insts(int num_tests, const EnumNode *node, int depth) {
       if (depth == 4)
         num_enumerated += 1;
 
+      num_enumerated += 1;
       if (__builtin_expect(div_by_zero, 0))
         continue;
 

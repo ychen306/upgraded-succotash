@@ -597,7 +597,7 @@ def emit_inst_runners(insts, out, h_out):
   sig2insts = classify_insts(insts)
   emitted = set()
 
-  h_out.write('extern "C" {\n')
+  out.write('#include "insts.h"\n')
 
   for sig, insts in sig2insts.items():
     num_inputs = len(sig.inputs)
@@ -628,7 +628,6 @@ def emit_inst_runners(insts, out, h_out):
 
       out.write('}\n') # end function
 
-  h_out.write('}\n') # close extern "C"
 
 if __name__ == '__main__':
   import sys
@@ -712,7 +711,10 @@ if __name__ == '__main__':
   prune_enum_history(enum_history, cert2graph, unique_graphs)
 
   with open('t.cc', 'w') as out:
+    out.write('extern "C" {\n')
     out.write('#include "insts.h"\n')
+    out.write('}\n')
+
     emit_includes(out)
     emit_enumerator(
         target.size(),
