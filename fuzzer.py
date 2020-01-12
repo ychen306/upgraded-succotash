@@ -433,19 +433,20 @@ if __name__ == '__main__':
   from intrinsic_types import IntegerType
 
   sema = '''
-<intrinsic tech='SSE3' vexEq='TRUE' rettype='__m128d' name='_mm_movedup_pd'>
-	<type>Floating Point</type>
-	<CPUID>SSE3</CPUID>
-	<category>Move</category>
-	<parameter varname='a' type='__m128d'/>
-	<description>Duplicate the low double-precision (64-bit) floating-point element from "a", and store the results in "dst".
-	</description>
+<intrinsic tech="Other" rettype='unsigned int' name='_bextr_u32'>
+	<type>Integer</type>
+	<CPUID>BMI1</CPUID>
+	<category>Bit Manipulation</category>
+	<parameter type='unsigned int' varname='a' />
+	<parameter type='unsigned int' varname='start' />
+	<parameter type='unsigned int' varname='len' />
+	<description>Extract contiguous bits from unsigned 32-bit integer "a", and store the result in "dst". Extract the number of bits specified by "len", starting at the bit specified by "start".</description>
 	<operation>
-tmp[63:0] := a[63:0]
-tmp[127:64] := a[63:0]
+tmp := ZeroExtend_To_512(a)
+dst := ZeroExtend(tmp[start[7:0]+len[7:0]-1:start[7:0]])
 	</operation>
-	<instruction name='movddup' form='xmm, xmm'/>
-	<header>pmmintrin.h</header>
+	<instruction name='bextr' form='r32, r32, r32'/>
+	<header>immintrin.h</header>
 </intrinsic>
   '''
   intrin_node = ET.fromstring(sema)
