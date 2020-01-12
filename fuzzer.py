@@ -70,7 +70,6 @@ def check_compiled_spec_with_examples(param_vals, outs, out_types, inputs, expec
     subs = [(param, z3.BitVecVal(x, param.size())) for param, x in zip(param_vals, input)]
     outs_concrete = [z3.simplify(z3.substitute(out, *subs))
         for out in outs]
-    print(input, outs_concrete, expected)
     constraints.append(
         z3.And([equal(z3.BitVecVal(y_expected, y.size()), y, out_type)
           for y_expected, y, out_type in zip(expected, outs_concrete, out_types)]))
