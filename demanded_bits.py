@@ -32,7 +32,7 @@ class RangeSet:
     self.finalize()
     return self.ranges
 
-def get_may_demanded_bits(x, y):
+def get_demanded_bits(x, y, is_must=False):
   '''
   Let `x' be a live-in of `y'.
   For each bits `i' of `y', find out bits of `x' that
@@ -46,26 +46,21 @@ def get_may_demanded_bits(x, y):
       s.push()
       x_prime = x ^ (~(1 << j))
       y_prime = z3.substitute(y, (x, x_prime))
-      s.add(z3.Extract(i,i,y) != z3.Extract(i,i,y_prime))
-      if s.check() != z3.unsat:
+
+      if is_must:
+        # check if there are cases when x[j] doesn't matter
+        # if unsat, then x[j] always (must) matter
+        assertion = z3.Extract(i,i,y) == z3.Extract(i,i,y_prime)
+      else:
+        # check if there are cases when x[j] matters
+        assertion = z3.Extract(i,i,y) != z3.Extract(i,i,y_prime)
+
+      s.add(assertion)
+      stat = s.check()
+
+      if is_must and stat == sat.unsat:
         demanded.add(j)
-      s.pop()
-
-    demanded_bits[i] = demanded.to_list()
-  return demanded_bits
-
-def get_must_demanded_bits(x, xs, y):
-  s = z3.Solver()
-  demanded_bits = {}
-  for i in range(y.size()):
-    demanded = RangeSet()
-    for j in range(x.size()):
-      s.push()
-      x_prime = x ^ (~(1 << j))
-      y_prime = z3.substitute(y, (x, x_prime))
-      s.add(z3.ForAll(xs, 
-        z3.Extract(i,i,y) != z3.Extract(i,i,y_prime)))
-      if s.check() != z3.unsat:
+      elif not is_must and stat != z3.unsat:
         demanded.add(j)
       s.pop()
 
@@ -75,7 +70,7 @@ def get_must_demanded_bits(x, xs, y):
 
 from expr_sampler import sigs, semas
 
-def get_may_demanded_bits_for_inst(concrete_inst):
+def get_demanded_bits_for_inst(concrete_inst, is_must=False):
   inst, imm8 = concrete_inst
   xs, ys = semas[inst]
   input_types, _ = sigs[inst]
@@ -86,7 +81,7 @@ def get_may_demanded_bits_for_inst(concrete_inst):
       break
   result = {'inst': (inst, imm8), 'demanded': []}
   for x in xs:
-    result['demanded'].append(get_may_demanded_bits(x, y))
+    result['demanded'].append(get_demanded_bits(x, y, is_must))
   return result
 
 def get_must_demanded_bits_for_inst(concrete_inst):
@@ -100,7 +95,7 @@ def get_must_demanded_bits_for_inst(concrete_inst):
       break
   result = {'inst': (inst, imm8), 'demanded': []}
   for x in xs:
-    result['demanded'].append(get_must_demanded_bits(x, xs, y))
+    result['demanded'].append(get_must_demanded_bits(x, y))
   return result
 
 if __name__ == '__main__':
@@ -112,9 +107,9 @@ if __name__ == '__main__':
 
   with open('instantiated-insts.json') as f:
     demanded_bits = []
-    instantiated_insts = json.load(f)
+    instantiated_insts = json.load(f)[:5]
 
-  results = pool.imap_unordered(get_may_demanded_bits_for_inst, instantiated_insts)
+  results = pool.imap_unordered(get_demanded_bits_for_inst, instantiated_insts)
   pbar = tqdm(iter(results), total=len(instantiated_insts))
   for result in pbar:
     demanded_bits.append(result)

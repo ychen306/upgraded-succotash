@@ -6,6 +6,7 @@ from expr_sampler import sigs
 import sys
 import pynauty
 from copy import copy
+from semas import semas
 
 import z3
 import json
@@ -628,19 +629,27 @@ def emit_inst_runners(insts, out, h_out):
 
       out.write('}\n') # end function
 
+def nice_sema(sema):
+  xs, ys = sema
+  def run(*args):
+    return z3.substitute(ys[0], *zip(xs, args))
+  return run
 
 if __name__ == '__main__':
   import sys
   insts = []
 
-  bw = 32
+  bw = 128
 
   for inst, (input_types, _) in sigs.items():
     #if sigs[inst][1][0] != 256:
     #  continue
 
-    if str(bw) not in inst or 'llvm' not in inst:
-      continue
+    #if 'epi16' not in inst:
+    #  continue
+
+    #if str(bw) not in inst or 'llvm' not in inst:
+    #  continue
 
     #if 'llvm' not in inst:
     #  continue
@@ -673,30 +682,22 @@ if __name__ == '__main__':
   import random
   random.seed(42)
   random.shuffle(insts)
-  insts = insts[:30]
-  insts = [
-    ConcreteInst('bvnot32', None),
-    ConcreteInst('llvm_Xor_32', None), # bvxor
-    ConcreteInst('llvm_And_32', None), # bvand
-    ConcreteInst('llvm_Or_32', None), # bvor
-    ConcreteInst('bvneg', None),
-    ConcreteInst('llvm_Add_32', None), # bvadd
-    ConcreteInst('llvm_Mul_32', None), # bvmul
-    ConcreteInst('llvm_UDiv_32', None), # bvudiv
-    ConcreteInst('llvm_URem_32', None), # bvurem
-    ConcreteInst('llvm_LShr_32', None), # bvlshr
-    ConcreteInst('llvm_AShr_32', None), # bvashr
-    ConcreteInst('llvm_Shl_32', None), # bvshl
-    ConcreteInst('llvm_SDiv_32', None), # bvsdiv
-    ConcreteInst('llvm_SRem_32', None), # bvsrem
-    ConcreteInst('llvm_Sub_32', None), # bvsub
-    ]
+  print(len(insts))
 
-  liveins = [Variable('x', bw)]#, Variable('y', bw)]#, ('z', bw)]
-  constants = [Constant(1,bw), Constant(0,bw)]
+  bw = 128
+
+  liveins = [Variable('x', bw)]
+  #liveins = [Variable('x', bw), Variable('y', bw)]
+  constants = [Constant(1,32), Constant(0,32)]
   x, y, z = z3.BitVecs('x y z', bw)
   target = z3.If(x >= y, x, y)
   target = x & (1 + (x|(x-1)))
+  #target = nice_sema(semas['_pdep_u32'])(x, y)
+  target = z3.ZeroExt(16, 
+      sum(
+      z3.Extract(i*16+15, i*16, x)
+      for i in range(128//16)))
+
 
   num_levels = 4
 
