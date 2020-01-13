@@ -32,7 +32,7 @@ class RangeSet:
     self.finalize()
     return self.ranges
 
-def get_demanded_bits(x, y, is_must=False):
+def get_demanded_bits(x, y, is_must=False, fast=True):
   '''
   Let `x' be a live-in of `y'.
   For each bits `i' of `y', find out bits of `x' that
@@ -43,7 +43,6 @@ def get_demanded_bits(x, y, is_must=False):
   for i in range(y.size()):
     demanded = RangeSet()
     for j in range(x.size()):
-      s.push()
       x_prime = x ^ (~(1 << j))
       y_prime = z3.substitute(y, (x, x_prime))
 
@@ -55,9 +54,19 @@ def get_demanded_bits(x, y, is_must=False):
         # check if there are cases when x[j] matters
         assertion = z3.Extract(i,i,y) != z3.Extract(i,i,y_prime)
 
+      if fast:
+        assertion = z3.simplify(assertion)
+        # don't do full solving
+        # just see if we can use the simplifier to prove the assertion
+        if is_must and z3.is_false(assertion):
+          demanded.add(j)
+        elif is_must and not z3.is_false(assertion):
+          demanded.add(j)
+        continue
+
+      s.push()
       s.add(assertion)
       stat = s.check()
-
       if is_must and stat == sat.unsat:
         demanded.add(j)
       elif not is_must and stat != z3.unsat:
@@ -70,7 +79,7 @@ def get_demanded_bits(x, y, is_must=False):
 
 from expr_sampler import sigs, semas
 
-def get_demanded_bits_for_inst(concrete_inst, is_must=False):
+def get_demanded_bits_for_inst(concrete_inst, is_must=False, fast=True):
   inst, imm8 = concrete_inst
   xs, ys = semas[inst]
   input_types, _ = sigs[inst]
@@ -81,7 +90,7 @@ def get_demanded_bits_for_inst(concrete_inst, is_must=False):
       break
   result = {'inst': (inst, imm8), 'demanded': []}
   for x in xs:
-    result['demanded'].append(get_demanded_bits(x, y, is_must))
+    result['demanded'].append(get_demanded_bits(x, y, is_must, fast))
   return result
 
 def get_must_demanded_bits_for_inst(concrete_inst):
@@ -103,11 +112,11 @@ if __name__ == '__main__':
   from tqdm import tqdm
   from multiprocessing import Pool
   
-  pool = Pool(8)
+  pool = Pool(12)
 
   with open('instantiated-insts.json') as f:
     demanded_bits = []
-    instantiated_insts = json.load(f)[:5]
+    instantiated_insts = json.load(f)
 
   results = pool.imap_unordered(get_demanded_bits_for_inst, instantiated_insts)
   pbar = tqdm(iter(results), total=len(instantiated_insts))
