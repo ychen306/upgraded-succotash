@@ -60,7 +60,7 @@ def get_demanded_bits(x, y, is_must=False, fast=True):
         # just see if we can use the simplifier to prove the assertion
         if is_must and z3.is_false(assertion):
           demanded.add(j)
-        elif is_must and not z3.is_false(assertion):
+        elif not is_must and not z3.is_false(assertion):
           demanded.add(j)
         continue
 
