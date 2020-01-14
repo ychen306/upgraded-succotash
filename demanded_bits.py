@@ -43,7 +43,7 @@ def get_demanded_bits(x, y, is_must=False, fast=True):
   for i in range(y.size()):
     demanded = RangeSet()
     for j in range(x.size()):
-      x_prime = x ^ (~(1 << j))
+      x_prime = x ^ (1 << j)
       y_prime = z3.substitute(y, (x, x_prime))
 
       if is_must:
