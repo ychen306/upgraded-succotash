@@ -114,7 +114,7 @@ if __name__ == '__main__':
   from tqdm import tqdm
   from multiprocessing import Pool
   
-  pool = Pool(12)
+  pool = Pool(48)
 
   with open('instantiated-insts.json') as f:
     demanded_bits = []

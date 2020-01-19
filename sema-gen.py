@@ -49,13 +49,14 @@ for intrin in data_root.iter('intrinsic'):
       'mant' in intrin.attrib['name'] or
       'ord' in intrin.attrib['name'] or
       '4dpwss' in intrin.attrib['name'] or
+      'cvt' in intrin.attrib['name'] or
       intrin.attrib['name'].startswith('_bit') or
       intrin.attrib['name'] in ('_rdpmc', '_rdtsc')):
     continue
   cat = intrin.find('category')
   if cat is not None and cat.text in (
       'Elementary Math Functions', 
-      'General Support', 'Convert',
+      'General Support', 
       'Load', 'Store', 'Special Math Functions'):
     continue
   if skip_to is not None and not skipped:

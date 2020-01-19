@@ -433,20 +433,26 @@ if __name__ == '__main__':
   from intrinsic_types import IntegerType
 
   sema = '''
-<intrinsic tech="Other" rettype='unsigned int' name='_bextr_u32'>
+<intrinsic tech='SSE4.1' vexEq='TRUE' rettype='__m128i' name='_mm_packus_epi32'>
 	<type>Integer</type>
-	<CPUID>BMI1</CPUID>
-	<category>Bit Manipulation</category>
-	<parameter type='unsigned int' varname='a' />
-	<parameter type='unsigned int' varname='start' />
-	<parameter type='unsigned int' varname='len' />
-	<description>Extract contiguous bits from unsigned 32-bit integer "a", and store the result in "dst". Extract the number of bits specified by "len", starting at the bit specified by "start".</description>
+	<CPUID>SSE4.1</CPUID>
+	<category>Convert</category>
+	<category>Miscellaneous</category>
+	<parameter varname='a' type='__m128i'/>
+	<parameter varname='b' type='__m128i'/>
+	<description>Convert packed 32-bit integers from "a" and "b" to packed 16-bit integers using unsigned saturation, and store the results in "dst".</description>
 	<operation>
-tmp := ZeroExtend_To_512(a)
-dst := ZeroExtend(tmp[start[7:0]+len[7:0]-1:start[7:0]])
+dst[15:0] := Saturate_Int32_To_UnsignedInt16 (a[31:0])
+dst[31:16] := Saturate_Int32_To_UnsignedInt16 (a[63:32])
+dst[47:32] := Saturate_Int32_To_UnsignedInt16 (a[95:64])
+dst[63:48] := Saturate_Int32_To_UnsignedInt16 (a[127:96])
+dst[79:64] := Saturate_Int32_To_UnsignedInt16 (b[31:0])
+dst[95:80] := Saturate_Int32_To_UnsignedInt16 (b[63:32])
+dst[111:96] := Saturate_Int32_To_UnsignedInt16 (b[95:64])
+dst[127:112] := Saturate_Int32_To_UnsignedInt16 (b[127:96])
 	</operation>
-	<instruction name='bextr' form='r32, r32, r32'/>
-	<header>immintrin.h</header>
+	<instruction name='packusdw' form='xmm, xmm'/>
+	<header>smmintrin.h</header>
 </intrinsic>
   '''
   intrin_node = ET.fromstring(sema)
