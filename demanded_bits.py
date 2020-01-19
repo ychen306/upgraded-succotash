@@ -90,7 +90,7 @@ def get_demanded_bits_for_inst(concrete_inst, is_must=False, fast=True):
       break
   result = {'inst': (inst, imm8), 'demanded': []}
   for x, ty in zip(xs, input_types):
-    if x.is_constant:
+    if ty.is_constant:
       continue
     result['demanded'].append(get_demanded_bits(x, y, is_must, fast))
   return result
