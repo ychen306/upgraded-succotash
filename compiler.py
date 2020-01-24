@@ -468,7 +468,9 @@ def compile(spec):
   returns_mask = is_mask(spec.rettype)
   if spec.rettype != 'void':
     rettype = intrinsic_types[spec.rettype]
-    if not returns_mask:
+    # if the environment has 'k' defined. E.g. k is a parameter
+    # the k cannot be returned implicitly
+    if not returns_mask or env.has('k'):
       env.define('dst', type=rettype, value=new_sym_val(rettype))
     else:
       env.define('k', type=rettype, value=new_sym_val(rettype))
@@ -946,26 +948,34 @@ RETURN k
 </intrinsic>
   '''
   sema = '''
-<intrinsic tech='AVX2' rettype='__m256i' name='_mm256_maddubs_epi16'>
+<intrinsic tech='AVX-512' rettype='__mmask64' name='_mm512_mask_bitshuffle_epi64_mask'>
 	<type>Integer</type>
-	<CPUID>AVX2</CPUID>
-	<category>Arithmetic</category>
-	<parameter varname='a' type='__m256i'/>
-	<parameter varname='b' type='__m256i'/>
-	<description>Vertically multiply each unsigned 8-bit integer from "a" with the corresponding signed 8-bit integer from "b", producing intermediate signed 16-bit integers. Horizontally add adjacent pairs of intermediate signed 16-bit integers, and pack the saturated results in "dst".
+	<type>Mask</type>
+	<CPUID>AVX512_BITALG</CPUID>
+	<category>Bit Manipulation</category>
+	<parameter varname='k' type='__mmask64'/>
+	<parameter varname='b' type='__m512i'/>
+	<parameter varname='c' type='__m512i'/>
+	<description>Gather 64 bits from "b" using selection bits in "c". For each 64-bit element in "b", gather 8 bits from the 64-bit element in "b" at 8 bit position controlled by the 8 corresponding 8-bit elements of "c", and store the result in the corresponding 8-bit element of "dst" using writemask "k" (elements are zeroed out when the corresponding mask bit is not set).
 	</description>
 	<operation>
-FOR j := 0 to 15
-	i := j*16
-	dst[i+15:i] := Saturate_To_Int16( a[i+15:i+8]*b[i+15:i+8] + a[i+7:i]*b[i+7:i] )
+FOR i := 0 to 7 //Qword
+	FOR j := 0 to 7 // Byte
+		IF k[i*8+j]
+			m := c.qword[i].byte[j] &amp; 0x3F
+			dst[i*8+j] := b.qword[i].bit[m]
+		ELSE
+			dst[i*8+j] := 0
+		FI
+	ENDFOR
 ENDFOR
-dst[MAX:256] := 0
+dst[MAX:64] := 0
 	</operation>
-	<instruction name='vpmaddubsw' form='ymm, ymm, ymm'/>
+	
+	<instruction name='VPSHUFBITQMB' form='k1 {k2}, zmm, zmm' xed=''/>
 	<header>immintrin.h</header>
 </intrinsic>
   '''
-
   intrin_node = ET.fromstring(sema)
   spec = get_spec_from_xml(intrin_node)
   param_vals, outs = compile(spec)
