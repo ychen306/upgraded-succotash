@@ -32,13 +32,14 @@ class RangeSet:
     self.finalize()
     return self.ranges
 
-def get_demanded_bits(x, y, is_must=False, fast=True):
+def get_demanded_bits(x, y, is_must=False, fast=True, timeout=1000):
   '''
   Let `x' be a live-in of `y'.
   For each bits `i' of `y', find out bits of `x' that
   *could* affect `y[i]'
   '''
   s = z3.Solver()
+  s.set("timeout", timeout)
   demanded_bits = {}
   for i in range(y.size()):
     demanded = RangeSet()
@@ -79,7 +80,7 @@ def get_demanded_bits(x, y, is_must=False, fast=True):
 
 from expr_sampler import sigs, semas
 
-def get_demanded_bits_for_inst(concrete_inst, is_must=False, fast=True):
+def get_demanded_bits_for_inst(concrete_inst, is_must=False, fast=False):
   inst, imm8 = concrete_inst
   xs, ys = semas[inst]
   input_types, _ = sigs[inst]
@@ -114,7 +115,7 @@ if __name__ == '__main__':
   from tqdm import tqdm
   from multiprocessing import Pool
   
-  pool = Pool(48)
+  pool = Pool(128)
 
   with open('instantiated-insts.json') as f:
     demanded_bits = []
