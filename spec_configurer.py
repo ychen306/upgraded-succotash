@@ -61,23 +61,21 @@ if __name__ == '__main__':
   from manual_parser import get_spec_from_xml
 
   sema = '''
-<intrinsic tech='AVX2' rettype='__m256i' name='_mm256_maddubs_epi16'>
+<intrinsic tech='SSE2' vexEq='TRUE' rettype='__m128i' name='_mm_adds_epu8'>
 	<type>Integer</type>
-	<CPUID>AVX2</CPUID>
+	<CPUID>SSE2</CPUID>
 	<category>Arithmetic</category>
-	<parameter varname='a' type='__m256i'/>
-	<parameter varname='b' type='__m256i'/>
-	<description>Vertically multiply each unsigned 8-bit integer from "a" with the corresponding signed 8-bit integer from "b", producing intermediate signed 16-bit integers. Horizontally add adjacent pairs of intermediate signed 16-bit integers, and pack the saturated results in "dst".
-	</description>
+	<parameter varname='a' type='__m128i'/>
+	<parameter varname='b' type='__m128i'/>
+	<description>Add packed unsigned 8-bit integers in "a" and "b" using saturation, and store the results in "dst".</description>
 	<operation>
 FOR j := 0 to 15
-	i := j*16
-	dst[i+15:i] := Saturate_To_Int16( a[i+15:i+8]*b[i+15:i+8] + a[i+7:i]*b[i+7:i] )
+	i := j*8
+	dst[i+7:i] := Saturate_To_UnsignedInt8( a[i+7:i] + b[i+7:i] )
 ENDFOR
-dst[MAX:256] := 0
 	</operation>
-	<instruction name='vpmaddubsw' form='ymm, ymm, ymm'/>
-	<header>immintrin.h</header>
+	<instruction name='paddusb' form='xmm, xmm'/>
+	<header>emmintrin.h</header>
 </intrinsic>
   '''
 

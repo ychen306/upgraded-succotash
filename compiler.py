@@ -634,7 +634,7 @@ builtins = {
     'Saturate_To_Int16': gen_saturation_func(16, False, True),
     'Saturate_To_Int8': gen_saturation_func(8, True, True),
     'Saturate_To_UnsignedInt16': gen_saturation_func(16, True, False),
-    'Saturate_To_UnsignedInt8': gen_saturation_func(8, True, False),
+    'Saturate_To_UnsignedInt8': gen_saturation_func(8, False, False),
     'Saturate_UnsignedInt16_To_Int8': gen_saturation_func(8, False, True),
     'Saturate_UnsignedInt32_To_Int16': gen_saturation_func(16, False, True),
     'Saturate_UnsignedInt32_To_Int8': gen_saturation_func(8, False, True),
