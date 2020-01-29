@@ -18,7 +18,11 @@ max_unroll_factor = max_vl * 2
 def unreachable():
   assert False
 
-minimize_bitwidth = True
+minimize_bitwidth = False
+def set_bitwidth_minimization(v):
+  global minimize_bitwidth
+  minimize_bitwidth = v
+
 
 class Environment:
   def __init__(self, func_defs=None):

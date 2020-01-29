@@ -43,7 +43,11 @@ def configure_spec(spec, num_tests=10, num_iters=32):
     new_spec = spec._replace(configs=configs)
     ok, _ = fuzz_intrinsic(new_spec)
     if ok:
-      return True, True, new_spec
+      # now turn on bitwidth minimization and see if it's still correct
+      set_bitwidth_minimization(True)
+      ok, _ = fuzz_intrinsic(new_spec)
+      set_bitwidth_minimization(False)
+      return ok, True, new_spec
   return False, True, spec
 
 if __name__ == '__main__':
