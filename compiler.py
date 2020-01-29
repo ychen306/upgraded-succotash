@@ -113,6 +113,7 @@ def slice_bit_vec(bv, lo, hi):
 
 get_total_arg_width = lambda a, b: a.size() + b.size()
 get_max_arg_width = lambda a, b: max(a.size(), b.size())
+get_add_width = lambda a, b: get_max_arg_width(a, b) + 1
 
 def select_op(op, signed):
   if signed:
@@ -163,8 +164,8 @@ binary_op_impls = {
 
     # FIXME: what about the signednes?????
     ('*', False): binary_op(operator.mul, get_bitwidth=get_total_arg_width, signed=False),
-    ('+', False): binary_op(operator.add, get_bitwidth=get_total_arg_width, signed=False),
-    ('-', False): binary_op(operator.sub, get_bitwidth=get_total_arg_width, signed=False),
+    ('+', False): binary_op(operator.add, get_bitwidth=get_add_width, signed=False),
+    ('-', False): binary_op(operator.sub, get_bitwidth=get_add_width, signed=False),
     ('>', False): binary_op(operator.gt),
     ('>=', False): binary_op(operator.ge),
     ('<', False): binary_op(operator.lt),
