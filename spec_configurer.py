@@ -28,7 +28,11 @@ def configure_spec(spec, num_tests=10, num_iters=32):
     return False, False, spec
 
   if ok: # already correct spec
-    return True, True, spec
+    # now turn on bitwidth minimization and see if it's still correct
+    set_bitwidth_minimization(True)
+    ok, _ = fuzz_intrinsic(spec, num_tests)
+    set_bitwidth_minimization(False)
+    return ok, True, spec
 
   configurable_exprs = [expr 
       for expr in spec.binary_exprs if expr.op in configurable_op]
@@ -46,7 +50,7 @@ def configure_spec(spec, num_tests=10, num_iters=32):
     if ok:
       # now turn on bitwidth minimization and see if it's still correct
       set_bitwidth_minimization(True)
-      ok, _ = fuzz_intrinsic(new_spec)
+      ok, _ = fuzz_intrinsic(new_spec, num_tests)
       set_bitwidth_minimization(False)
       return ok, True, new_spec
   return False, True, spec
