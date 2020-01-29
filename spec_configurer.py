@@ -61,20 +61,20 @@ if __name__ == '__main__':
   from manual_parser import get_spec_from_xml
 
   sema = '''
-<intrinsic tech='SSE2' vexEq='TRUE' rettype='__m128i' name='_mm_adds_epu8'>
+<intrinsic tech='SSE2' vexEq='TRUE' rettype='__m128i' name='_mm_adds_epu16'>
 	<type>Integer</type>
 	<CPUID>SSE2</CPUID>
 	<category>Arithmetic</category>
 	<parameter varname='a' type='__m128i'/>
 	<parameter varname='b' type='__m128i'/>
-	<description>Add packed unsigned 8-bit integers in "a" and "b" using saturation, and store the results in "dst".</description>
+	<description>Add packed unsigned 16-bit integers in "a" and "b" using saturation, and store the results in "dst".</description>
 	<operation>
-FOR j := 0 to 15
-	i := j*8
-	dst[i+7:i] := Saturate_To_UnsignedInt8( a[i+7:i] + b[i+7:i] )
+FOR j := 0 to 7
+	i := j*16
+	dst[i+15:i] := Saturate_To_UnsignedInt16( a[i+15:i] + b[i+15:i] )
 ENDFOR
 	</operation>
-	<instruction name='paddusb' form='xmm, xmm'/>
+	<instruction name='paddusw' form='xmm, xmm'/>
 	<header>emmintrin.h</header>
 </intrinsic>
   '''
