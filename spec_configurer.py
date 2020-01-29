@@ -3,6 +3,7 @@ Many operators are ambiguously defined in the manual.
 For instance, '<' is used to compare both signed and unsigned bitvectors.
 '''
 from fuzzer import fuzz_intrinsic
+from compiler import set_bitwidth_minimization
 import itertools
 
 # these operators are ambiguously defined (so far as signedness is concerned)
