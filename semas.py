@@ -28,6 +28,7 @@ if include_bv_ops:
   semas['bvneg'] = (x32,), (-x32,)
 
 # get semantics of intrinsics
+#with open('intrinsics.avx512.sema') as sema_f:
 with open('intrinsics.avx2.sema') as sema_f:
   while not ignore_intrinsics:
     intrin_name = next(sema_f, None)
@@ -35,8 +36,8 @@ with open('intrinsics.avx2.sema') as sema_f:
       break
 
     spec = next(sema_f)
-    if 'fp' in spec:
-      continue
+    #if 'fp' in spec:
+    #  continue
 
     #if 'mask' not in intrin_name:
     #  continue
