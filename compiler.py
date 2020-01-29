@@ -128,33 +128,13 @@ def select_op(op, signed):
   }
   return unsigned_ops.get(op, op)
 
-def reduce_bitwidth(op, a, b, c_target, signed):
-  solver = z3.Solver()
-  bw = get_max_arg_width(a, b)
-  while True:
-    a = fix_bitwidth(a, bw, signed)
-    b = fix_bitwidth(b, bw, signed)
-    c = op(a, b)
-    stat = solver.check(fix_bitwidth(c, c_target.size(), signed) != c_target)
-    if stat == z3.unsat:
-      break
-    bw += 1
-  return c
-
 def binary_op(op, signed=True, trunc=False, get_bitwidth=lambda a, b:max(a.size(), b.size())):
   def impl(a, b, signed_override=signed):
     bitwidth = get_bitwidth(a, b)
     mask = (1 << get_max_arg_width(a,b))-1
-    a_ext = fix_bitwidth(a, bitwidth, signed_override)
-    b_ext = fix_bitwidth(b, bitwidth, signed_override)
-    selected_op = select_op(op, signed_override)
-    c_ext = selected_op(a_ext, b_ext)
-    if minimize_bitwidth:
-      # ok, so we (sign/zero)-extend a, b to get a value that's correct
-      # now we try to arrive at a bitwidth that's smaller but still correct
-      c = reduce_bitwidth(selected_op, a, b, c_ext, signed_override)
-    else:
-      c = c_ext
+    a = fix_bitwidth(a, bitwidth, signed_override)
+    b = fix_bitwidth(b, bitwidth, signed_override)
+    c = select_op(op, signed_override)(a, b)
     if trunc:
       c = c & mask
     return c

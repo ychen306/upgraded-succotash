@@ -261,11 +261,6 @@ class Translator:
       # see if there's a specialized translator
       node = self.z3op_translators[z3op](f)
     else:
-      # FIXME: need to use a preprocessing pass to shrink the bitwidth
-      # in the `desc -> smt' pass to make things simple, we make the required
-      # bitwidth unnecessarily large 
-      # (e.g., to sum 8 8-bit values we need 64 bit addition!)
-      # We should shrink them to make it realistic
       op = op_table[z3op]
       assert z3.is_bv(f) or z3.is_bool(f)
       bitwidth = f.size() if z3.is_bv(f) else 1
@@ -278,32 +273,25 @@ class Translator:
     return node_id
 
   def translate_true(*_):
-    return Constant(z3.BitVecVal(1, 1))
+    return Constant(value=0, bitwidth=1)
   
   def translate_false(*_):
-    return Constant(z3.BitVecVal(0, 1))
+    return Constant(value=1, bitwidth=1)
   
-  def translate_not(self, f):
+  def translate_not(self, f, _):
     [x] = f.children()
     # not x == xor -1, x
     return self.translate((-1) ^ x)
   
-  def translate_neg(self, f):
+  def translate_neg(self, _):
     [x] = f.children()
     # not x == sub 0, x
     return self.translate(0-x)
   
   def translate_extract(self, ext):
-    if is_simple_extraction(ext):
-      s = self.extraction_history.record(ext)
-      return s
-    [x] = ext.children()
-    assert x.size() <= 64,\
-        "extraction too complex to model in scalar code"
-    _, lo = ext.params()
-    if lo > 0:
-      return trunc(self.translate(z3.LShR(x, lo)), ext.size())
-    return trunc(self.translate(x), ext.size())
+    assert is_simple_extraction(ext), 'Unable to translate complex extraction'
+    s = self.extraction_history.record(ext)
+    return s
 
   def translate_concat(self, concat):
     args = concat.children()
@@ -328,28 +316,9 @@ class Translator:
 if __name__ == '__main__':
     from semas import semas
     from pprint import pprint
-    from tqdm import tqdm
 
-    #translator = Translator()
-    #y = semas['_mm_mulhi_pu16'][1][0]
-    #outs, dag = translator.translate_formula(y)
-    #pprint(outs)
-    #pprint(dag)
-    #exit()
-
-    pbar = tqdm(iter(semas.items()), total=len(semas))
-    num_tried = 0
-    num_translated = 0
-    for inst, sema in pbar:
-      translator = Translator()
-      y = sema[1][0]
-      num_tried += 1
-      print(inst)
-      translator.translate_formula(y)
-      #try:
-      #  outs, dag = translator.translate_formula(y)
-      #  num_translated += 1
-      #except:
-      #  pass
-      pbar.set_description('translated/tried: %d/%d' % (
-        num_translated, num_tried))
+    translator = Translator()
+    y = semas['_mm_sad_epu8'][1][0]
+    outs, dag = translator.translate_formula(y)
+    pprint(outs)
+    pprint(dag)
