@@ -81,7 +81,7 @@ op_table = {
     z3.Z3_OP_BOR : 'Or',
     z3.Z3_OP_BXOR : 'Xor',
     z3.Z3_OP_SIGN_EXT: 'SExt',
-    z3.Z3_OP_SIGN_EXT: 'ZExt',
+    z3.Z3_OP_ZERO_EXT: 'ZExt',
     #z3.Z3_OP_BNOT
     #z3.Z3_OP_BNEG
     #z3.Z3_OP_CONCAT
@@ -92,6 +92,7 @@ op_table = {
     z3.Z3_OP_UGT : 'Ugt',
     z3.Z3_OP_UGEQ : 'Uge',
     z3.Z3_OP_SGT : 'Sgt',
+
     z3.Z3_OP_SGEQ : 'Sge',
     z3.Z3_OP_BADD : 'Add',
     z3.Z3_OP_BMUL : 'Mul',
@@ -105,7 +106,8 @@ op_table = {
     z3.Z3_OP_BASHR : 'AShr',
     z3.Z3_OP_BSUB : 'Sub',
     z3.Z3_OP_EQ : 'Eq',
-    #z3.Z3_OP_DISTINCT : 'distinct',
+
+    z3.Z3_OP_DISTINCT : 'Ne',
 
     z3.Z3_OP_BSDIV_I:  'SDiv',
     z3.Z3_OP_BUDIV_I:  'UDiv',
@@ -313,12 +315,14 @@ class Translator:
   def translate_not(self, f):
     [x] = f.children()
     # not x == xor -1, x
-    return self.translate((-1) ^ x)
+    node_id = self.translate((-1) ^ x)
+    return self.ir[node_id]
   
   def translate_neg(self, f):
     [x] = f.children()
     # not x == sub 0, x
-    return self.translate(0-x)
+    node_id = self.translate(0-x)
+    return self.ir[node_id]
   
   def translate_extract(self, ext):
     if is_simple_extraction(ext):
@@ -349,9 +353,18 @@ class Translator:
     func = f.decl().name()
     assert func.startswith('fp_')
     _, op, _ = func.split('_')
-    assert f.size() in [32, 64]
+    assert z3.is_bool(f) or f.size() in [32, 64]
+    bitwidth = 1 if z3.is_bool(f) else f.size()
+    if op == 'neg':
+      # implement `neg x` as `fsub 0, x`
+      [x] = f.children()
+      zero = z3.BitVecVal(0, x.size())
+      return Instruction(
+          op='FSub', bitwidth=bitwidth,
+          args=[self.translate(zero), self.translate(x)])
+
     return Instruction(
-        op=float_ops[op], bitwidth=f.size(),
+        op=float_ops[op], bitwidth=bitwidth,
         args=[self.translate(arg) for arg in f.children()])
 
 if __name__ == '__main__':
@@ -359,6 +372,8 @@ if __name__ == '__main__':
     from pprint import pprint
     from tqdm import tqdm
     import traceback
+    import math
+    import functools
 
     #translator = Translator()
     #y = semas['_mm_packs_epi32'][1][0]
@@ -378,15 +393,24 @@ if __name__ == '__main__':
       num_tried += 1
 
       # compute stat. for average number of variables
-
       try:
         outs, dag = translator.translate_formula(y)
         var_counts.append(sum(
             count_reachable_vars(dag, out)
             for out in outs) / len(outs))
         num_translated += 1
-      except Exception as e:
-        print('ERROR PROCESSING:', inst)
-        traceback.print_exc()
+        def get_size(x):
+          try:
+            return x.bitwidth
+          except:
+            return x.size()
+        sizes = {get_size(dag[y]) for y in outs}
+        if len(sizes) != 1:
+          gcd = functools.reduce(math.gcd, sizes)
+          print(inst, gcd, gcd in sizes)
+      except AssertionError as e:
+        pass
+        #print('ERROR PROCESSING:', inst)
+        #traceback.print_exc()
       pbar.set_description('translated/tried: %d/%d, average var count: %.4f' % (
         num_translated, num_tried, sum(var_counts)/len(var_counts)))
