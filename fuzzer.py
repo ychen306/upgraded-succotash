@@ -423,9 +423,6 @@ int main() {
     y.append(outputs)
 
   correct = check_compiled_spec_with_examples(param_vals, outs, out_types, x, y)
-  if correct:
-    print(outs)
-
   return correct, True
 
 if __name__ == '__main__':
