@@ -682,9 +682,26 @@ if __name__ == '__main__':
   import random
   random.seed(42)
   random.shuffle(insts)
-  print(len(insts))
 
-  bw = 128
+  insts = [
+      ConcreteInst('bvnot32', None),
+      ConcreteInst('llvm_Xor_32', None), # bvxor
+      ConcreteInst('llvm_And_32', None), # bvand
+      ConcreteInst('llvm_Or_32', None), # bvor
+      ConcreteInst('bvneg', None),
+      ConcreteInst('llvm_Add_32', None), # bvadd
+      ConcreteInst('llvm_Mul_32', None), # bvmul
+      ConcreteInst('llvm_UDiv_32', None), # bvudiv
+      ConcreteInst('llvm_URem_32', None), # bvurem
+      ConcreteInst('llvm_LShr_32', None), # bvlshr
+      ConcreteInst('llvm_AShr_32', None), # bvashr
+      ConcreteInst('llvm_Shl_32', None), # bvshl
+      ConcreteInst('llvm_SDiv_32', None), # bvsdiv
+      ConcreteInst('llvm_SRem_32', None), # bvsrem
+      ConcreteInst('llvm_Sub_32', None), # bvsub
+      ]
+
+  bw = 32
 
   liveins = [Variable('x', bw)]
   #liveins = [Variable('x', bw), Variable('y', bw)]
@@ -692,14 +709,8 @@ if __name__ == '__main__':
   x, y, z = z3.BitVecs('x y z', bw)
   target = z3.If(x >= y, x, y)
   target = x & (1 + (x|(x-1)))
-  #target = nice_sema(semas['_pdep_u32'])(x, y)
-  target = z3.ZeroExt(16, 
-      sum(
-      z3.Extract(i*16+15, i*16, x)
-      for i in range(128//16)))
 
-
-  num_levels = 4
+  num_levels = 6
 
   sig2insts = classify_insts(insts)
   graphs, enum_history, cert2graph = enumerate_graphs(

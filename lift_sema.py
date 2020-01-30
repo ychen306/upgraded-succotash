@@ -206,6 +206,21 @@ def recover_sub(f):
     return a - b2
   return f
 
+def count_reachable_vars(ir, root):
+  vars = set()
+  visited = set()
+  def visit(v):
+    if v in visited:
+      return
+    visited.add(v)
+    if isinstance(ir[v], Slice):
+      vars.add(ir[v])
+      return
+    if isinstance(ir[v], Instruction):
+      for w in ir[v].args:
+        visit(w)
+  visit(root)
+  return len(vars)
 
 class Translator:
   def __init__(self):
@@ -337,6 +352,8 @@ if __name__ == '__main__':
     #pprint(dag)
     #exit()
 
+    var_counts = []
+
     pbar = tqdm(iter(semas.items()), total=len(semas))
     num_tried = 0
     num_translated = 0
@@ -344,12 +361,16 @@ if __name__ == '__main__':
       translator = Translator()
       y = sema[1][0]
       num_tried += 1
-      print(inst)
-      translator.translate_formula(y)
-      #try:
-      #  outs, dag = translator.translate_formula(y)
-      #  num_translated += 1
-      #except:
-      #  pass
-      pbar.set_description('translated/tried: %d/%d' % (
-        num_translated, num_tried))
+
+      # compute stat. for average number of variables
+
+      try:
+        outs, dag = translator.translate_formula(y)
+        var_counts.append(sum(
+            count_reachable_vars(dag, out)
+            for out in outs) / len(outs))
+        num_translated += 1
+      except:
+        pass
+      pbar.set_description('translated/tried: %d/%d, average var count: %.4f' % (
+        num_translated, num_tried, sum(var_counts)/len(var_counts)))
