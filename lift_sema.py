@@ -5,6 +5,7 @@ Lift smt formula to an IR similar to LLVM (minus control flow)
 from collections import namedtuple, defaultdict
 import z3_utils
 import z3
+import bisect
 
 # "IR"
 Instruction = namedtuple('Instruction', ['op', 'bitwidth', 'args'])
@@ -12,6 +13,13 @@ Constant = namedtuple('Constant', ['value', 'bitwidth'])
 
 def trunc(x, size):
   return Instruction(op='Trunc', bitwidth=size, args=[x])
+
+bitwidth_table = [1, 8, 16, 32, 64]
+
+def quantize_bitwidth(bw):
+  idx = bisect.bisect_left(bitwidth_table, bw)
+  assert idx < len(bitwidth_table), "bitwidth too large for scalar operation"
+  return bitwidth_table[idx]
 
 class Slice:
   def __init__(self, base, lo, hi):
@@ -42,6 +50,9 @@ class Slice:
 
   def size(self):
     return self.hi - self.lo
+
+  def to_z3(self):
+    return z3.Extract(self.hi-1, self.lo, self.base)
 
   def __repr__(self):
     return f'{self.base}[{self.lo}:{self.hi}]'
@@ -132,6 +143,7 @@ def partition_slices(slices):
       if s.overlaps(s2):
         partition.remove(s2)
         partition.add(s.union(s2))
+        break
     else:
       partition.add(s)
   return partition
@@ -154,7 +166,7 @@ class ExtractionHistory:
     self.extracted_slices[x].append(s)
     return s
 
-  def translate_slices(self):
+  def translate_slices(self, translator):
     '''
     return a map <slice> -> <ir>
     '''
@@ -166,17 +178,22 @@ class ExtractionHistory:
           if s.overlaps(root_slice):
             lo = s.lo - root_slice.lo
             hi = s.hi - root_slice.lo
+            assert root_slice.size() >= s.size()
             if s == root_slice:
               translated[s] = root_slice
-            elif s.lo == 0:
+            elif lo == 0:
               # truncation
-              translated[s] = trunc(root_slice, s.size())
-            else: # s.lo > 0
+              translated[s] = trunc(
+                  translator.translate(root_slice.to_z3()),
+                  s.size())
+            else: # lo > 0
               # shift right + truncation
-              shift = Instruction(
-                  op='LShr',
-                  bitwidth=root_slice.size(),
-                  args=[root_slice])
+              #shift = Instruction(
+              #    op='LShr',
+              #    bitwidth=root_slice.size(),
+              #    args=[root_slice])
+              #translated[s] = trunc(shift, s.size())
+              shift = translator.translate(z3.LShR(root_slice.to_z3(), lo))
               translated[s] = trunc(shift, s.size())
             break
     return translated
@@ -247,7 +264,7 @@ class Translator:
     return new_id
 
   def translate_constant(self, c):
-    return Constant(value=c.as_long(), bitwidth=c.size())
+    return Constant(value=c.as_long(), bitwidth=quantize_bitwidth(c.size()))
 
   def translate_formula(self, f):
     '''
@@ -259,7 +276,7 @@ class Translator:
       # output is a concat, probably vector code
       outs = [self.translate(elem_f) for elem_f in f.children()]
     # translate the slices
-    slice2ir = self.extraction_history.translate_slices()
+    slice2ir = self.extraction_history.translate_slices(self)
     for node_id, node in self.ir.items():
       if isinstance(node, Slice):
         self.ir[node_id] = slice2ir[node]
@@ -276,16 +293,11 @@ class Translator:
       # see if there's a specialized translator
       node = self.z3op_translators[z3op](f)
     else:
-      # FIXME: need to use a preprocessing pass to shrink the bitwidth
-      # in the `desc -> smt' pass to make things simple, we make the required
-      # bitwidth unnecessarily large 
-      # (e.g., to sum 8 8-bit values we need 64 bit addition!)
-      # We should shrink them to make it realistic
       op = op_table[z3op]
       assert z3.is_bv(f) or z3.is_bool(f)
       bitwidth = f.size() if z3.is_bv(f) else 1
       node = Instruction(
-          op=op, bitwidth=bitwidth, 
+          op=op, bitwidth=quantize_bitwidth(bitwidth), 
           args=[self.translate(arg) for arg in f.children()])
 
     self.translated[f] = node_id
@@ -326,7 +338,8 @@ class Translator:
     assert z3.is_bv(a) and a.as_long() == 0,\
         "only support using concat for zero extension"
     return Instruction(
-        op='ZExt', bitwidth=concat.size(), args=[self.translate(b)])
+        op='ZExt', 
+        bitwidth=quantize_bitwidth(concat.size()), args=[self.translate(b)])
 
   def translate_uninterpreted(self, f):
     args = f.children()
@@ -336,6 +349,7 @@ class Translator:
     func = f.decl().name()
     assert func.startswith('fp_')
     _, op, _ = func.split('_')
+    assert f.size() in [32, 64]
     return Instruction(
         op=float_ops[op], bitwidth=f.size(),
         args=[self.translate(arg) for arg in f.children()])
@@ -344,9 +358,10 @@ if __name__ == '__main__':
     from semas import semas
     from pprint import pprint
     from tqdm import tqdm
+    import traceback
 
     #translator = Translator()
-    #y = semas['_mm_mulhi_pu16'][1][0]
+    #y = semas['_mm_packs_epi32'][1][0]
     #outs, dag = translator.translate_formula(y)
     #pprint(outs)
     #pprint(dag)
@@ -370,7 +385,8 @@ if __name__ == '__main__':
             count_reachable_vars(dag, out)
             for out in outs) / len(outs))
         num_translated += 1
-      except:
-        pass
+      except Exception as e:
+        print('ERROR PROCESSING:', inst)
+        traceback.print_exc()
       pbar.set_description('translated/tried: %d/%d, average var count: %.4f' % (
         num_translated, num_tried, sum(var_counts)/len(var_counts)))

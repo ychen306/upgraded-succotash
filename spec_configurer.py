@@ -61,21 +61,22 @@ if __name__ == '__main__':
   from manual_parser import get_spec_from_xml
 
   sema = '''
-<intrinsic tech='SSE2' vexEq='TRUE' rettype='__m128i' name='_mm_adds_epu16'>
+<intrinsic tech='SSSE3' vexEq='TRUE' rettype='__m128i' name='_mm_mulhrs_epi16'>
 	<type>Integer</type>
-	<CPUID>SSE2</CPUID>
+	<CPUID>SSSE3</CPUID>
 	<category>Arithmetic</category>
 	<parameter varname='a' type='__m128i'/>
 	<parameter varname='b' type='__m128i'/>
-	<description>Add packed unsigned 16-bit integers in "a" and "b" using saturation, and store the results in "dst".</description>
+	<description>Multiply packed 16-bit integers in "a" and "b", producing intermediate signed 32-bit integers. Truncate each intermediate integer to the 18 most significant bits, round by adding 1, and store bits [16:1] to "dst". </description>
 	<operation>
 FOR j := 0 to 7
 	i := j*16
-	dst[i+15:i] := Saturate_To_UnsignedInt16( a[i+15:i] + b[i+15:i] )
+	tmp[31:0] := ((a[i+15:i] * b[i+15:i]) &gt;&gt; 14) + 1
+	dst[i+15:i] := tmp[16:1]
 ENDFOR
 	</operation>
-	<instruction name='paddusw' form='xmm, xmm'/>
-	<header>emmintrin.h</header>
+	<instruction name='pmulhrsw' form='xmm, xmm'/>
+	<header>tmmintrin.h</header>
 </intrinsic>
   '''
 

@@ -114,6 +114,7 @@ def slice_bit_vec(bv, lo, hi):
 get_total_arg_width = lambda a, b: a.size() + b.size()
 get_max_arg_width = lambda a, b: max(a.size(), b.size())
 get_add_width = lambda a, b: get_max_arg_width(a, b) + 1
+get_left_width = lambda a, _: a.size()
 
 def select_op(op, signed):
   if signed:
@@ -155,7 +156,7 @@ binary_op_impls = {
     ('>', True): binary_float_cmp('gt'),
     ('>=', True): binary_float_cmp('ge'),
     ('!=', True): binary_float_cmp('ne'),
-    ('>>', True): binary_op(operator.rshift, signed=False),
+    ('>>', True): binary_op(operator.rshift, signed=False, get_bitwidth=get_left_width),
     ('<<', True): binary_op(operator.lshift, signed=False, get_bitwidth=get_max_shift_width),
 
     ('AND', True): binary_op(operator.and_, signed=False),
@@ -172,7 +173,7 @@ binary_op_impls = {
     ('<=', False): binary_op(operator.le),
     ('%', False): binary_op(operator.mod, signed=True),
     ('<<', False): binary_op(operator.lshift, signed=False, get_bitwidth=get_max_shift_width),
-    ('>>', False): binary_op(operator.rshift, signed=False),
+    ('>>', False): binary_op(operator.rshift, signed=False, get_bitwidth=get_left_width),
 
     ('AND', False): binary_op(operator.and_, signed=False),
     ('&', False): binary_op(operator.and_, signed=False),
@@ -491,14 +492,14 @@ def compile(spec):
       break
     compile_stmt(stmt, env)
 
-  outputs = [z3.simplify(env.get_value(out_param), elim_sign_ext=False) for out_param in out_params]
+  outputs = [z3.simplify(env.get_value(out_param)) for out_param in out_params]
   if not returns_void:
     if not returns_mask:
       retval = env.get_value('dst')
     else:
       retval = env.get_value('k')
     out_size = intrinsic_types[spec.rettype].bitwidth
-    dst = z3.simplify(fix_bitwidth(retval, out_size), elim_sign_ext=False)
+    dst = z3.simplify(fix_bitwidth(retval, out_size))
     outputs = [dst] + outputs
   return param_vals, outputs
 
