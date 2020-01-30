@@ -28,8 +28,8 @@ if include_bv_ops:
   semas['bvneg'] = (x32,), (-x32,)
 
 # get semantics of intrinsics
-#with open('intrinsics.avx512.sema') as sema_f:
-with open('intrinsics.avx2.sema') as sema_f:
+#with open('intrinsics.avx2.sema') as sema_f:
+with open('intrinsics.avx512.sema') as sema_f:
   while not ignore_intrinsics:
     intrin_name = next(sema_f, None)
     if intrin_name is None:
