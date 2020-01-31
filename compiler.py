@@ -112,6 +112,7 @@ def slice_bit_vec(bv, lo, hi):
   # worst case: not even size of the extraction is known
   mask = (1 << bitwidth) - 1
   mask = z3.Extract(bv.size()-1, 0, mask)
+  lo = fix_bitwidth(lo, bv.size())
   return z3.LShR(bv, lo) & mask
 
 get_total_arg_width = lambda a, b: a.size() + b.size()
@@ -959,27 +960,19 @@ RETURN k
 </intrinsic>
   '''
   sema = '''
-<intrinsic tech="AVX-512" rettype="__m512d" name="_mm512_maskz_permutexvar_pd">
-	<type>Floating Point</type>
-	<CPUID>AVX512F</CPUID>
-	<category>Swizzle</category>
-	<parameter varname="k" type="__mmask8"/>
-	<parameter varname="idx" type="__m512i"/>
-	<parameter varname="a" type="__m512d"/>
-	<description>Shuffle double-precision (64-bit) floating-point elements in "a" across lanes using the corresponding index in "idx", and store the results in "dst" using zeromask "k" (elements are zeroed out when the corresponding mask bit is not set).</description>
+<intrinsic tech="Other" rettype='unsigned int' name='_bextr_u32'>
+	<type>Integer</type>
+	<CPUID>BMI1</CPUID>
+	<category>Bit Manipulation</category>
+	<parameter type='unsigned int' varname='a' />
+	<parameter type='unsigned int' varname='start' />
+	<parameter type='unsigned int' varname='len' />
+	<description>Extract contiguous bits from unsigned 32-bit integer "a", and store the result in "dst". Extract the number of bits specified by "len", starting at the bit specified by "start".</description>
 	<operation>
-FOR j := 0 to 7
-	i := j*64
-	id := idx[i+2:i]*64
-	IF k[j]
-		dst[i+63:i] := a[id+63:id]
-	ELSE
-		dst[i+63:i] := 0
-	FI
-ENDFOR
-dst[MAX:512] := 0
+tmp := ZeroExtend_To_512(a)
+dst := ZeroExtend(tmp[start[7:0]+len[7:0]-1:start[7:0]])
 	</operation>
-	<instruction name='vpermpd' form='zmm {k}, zmm, zmm'/>
+	<instruction name='bextr' form='r32, r32, r32'/>
 	<header>immintrin.h</header>
 </intrinsic>
   '''
