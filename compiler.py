@@ -104,12 +104,15 @@ def slice_bit_vec(bv, lo, hi):
     return z3.Extract(hi.as_long(), lo.as_long(), bv)
 
   # "slow" path for when lo and hi can't be simplified:
-  lo = fix_bitwidth(lo, bv.size())
-  hi = fix_bitwidth(hi, bv.size())
-  bitwidth = z3.ZeroExt(max_vl, hi - lo) + 1
+  bitwidth = z3.simplify(z3.ZeroExt(max_vl, z3.simplify(hi - lo+1)))
+  if z3.is_bv_value(bitwidth):
+    lo = fix_bitwidth(lo, bv.size())
+    return z3.Extract(bitwidth.as_long()-1, 0, z3.LShR(bv, lo))
+
+  # worst case: not even size of the extraction is known
   mask = (1 << bitwidth) - 1
   mask = z3.Extract(bv.size()-1, 0, mask)
-  return (bv >> lo) & mask
+  return z3.LShR(bv, lo) & mask
 
 get_total_arg_width = lambda a, b: a.size() + b.size()
 get_max_arg_width = lambda a, b: max(a.size(), b.size())
@@ -499,7 +502,7 @@ def compile(spec):
     else:
       retval = env.get_value('k')
     out_size = intrinsic_types[spec.rettype].bitwidth
-    dst = z3.simplify(fix_bitwidth(retval, out_size))
+    dst = z3.simplify(fix_bitwidth(retval, out_size), bv_ite2id=True, elim_and=False, elim_ite=False, ite_extra_rules=True)
     outputs = [dst] + outputs
   return param_vals, outputs
 
