@@ -338,8 +338,9 @@ class Translator:
 
   def translate_concat(self, concat):
     args = concat.children()
+    assert len(args) == 2, "only support using concat for zext"
     a, b = args
-    assert z3.is_bv(a) and a.as_long() == 0,\
+    assert z3.is_bv_value(a) and a.as_long() == 0,\
         "only support using concat for zero extension"
     return Instruction(
         op='ZExt', 
@@ -409,7 +410,8 @@ if __name__ == '__main__':
           gcd = functools.reduce(math.gcd, sizes)
           print(inst, gcd, gcd in sizes)
       except AssertionError as e:
-        pass
+        if str(e).startswith('extraction'):
+          print(inst)
         #print('ERROR PROCESSING:', inst)
         #traceback.print_exc()
       pbar.set_description('translated/tried: %d/%d, average var count: %.4f' % (

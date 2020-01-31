@@ -956,31 +956,27 @@ RETURN k
 </intrinsic>
   '''
   sema = '''
-<intrinsic tech='AVX-512' rettype='__mmask64' name='_mm512_mask_bitshuffle_epi64_mask'>
-	<type>Integer</type>
-	<type>Mask</type>
-	<CPUID>AVX512_BITALG</CPUID>
-	<category>Bit Manipulation</category>
-	<parameter varname='k' type='__mmask64'/>
-	<parameter varname='b' type='__m512i'/>
-	<parameter varname='c' type='__m512i'/>
-	<description>Gather 64 bits from "b" using selection bits in "c". For each 64-bit element in "b", gather 8 bits from the 64-bit element in "b" at 8 bit position controlled by the 8 corresponding 8-bit elements of "c", and store the result in the corresponding 8-bit element of "dst" using writemask "k" (elements are zeroed out when the corresponding mask bit is not set).
-	</description>
+<intrinsic tech="AVX-512" rettype="__m512d" name="_mm512_maskz_permutexvar_pd">
+	<type>Floating Point</type>
+	<CPUID>AVX512F</CPUID>
+	<category>Swizzle</category>
+	<parameter varname="k" type="__mmask8"/>
+	<parameter varname="idx" type="__m512i"/>
+	<parameter varname="a" type="__m512d"/>
+	<description>Shuffle double-precision (64-bit) floating-point elements in "a" across lanes using the corresponding index in "idx", and store the results in "dst" using zeromask "k" (elements are zeroed out when the corresponding mask bit is not set).</description>
 	<operation>
-FOR i := 0 to 7 //Qword
-	FOR j := 0 to 7 // Byte
-		IF k[i*8+j]
-			m := c.qword[i].byte[j] &amp; 0x3F
-			dst[i*8+j] := b.qword[i].bit[m]
-		ELSE
-			dst[i*8+j] := 0
-		FI
-	ENDFOR
+FOR j := 0 to 7
+	i := j*64
+	id := idx[i+2:i]*64
+	IF k[j]
+		dst[i+63:i] := a[id+63:id]
+	ELSE
+		dst[i+63:i] := 0
+	FI
 ENDFOR
-dst[MAX:64] := 0
+dst[MAX:512] := 0
 	</operation>
-	
-	<instruction name='VPSHUFBITQMB' form='k1 {k2}, zmm, zmm' xed=''/>
+	<instruction name='vpermpd' form='zmm {k}, zmm, zmm'/>
 	<header>immintrin.h</header>
 </intrinsic>
   '''
