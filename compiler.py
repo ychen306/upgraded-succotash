@@ -107,7 +107,7 @@ def slice_bit_vec(bv, lo, hi):
   bitwidth = z3.simplify(z3.ZeroExt(max_vl, z3.simplify(hi - lo+1)))
   if z3.is_bv_value(bitwidth):
     lo = fix_bitwidth(lo, bv.size())
-    return z3.Extract(bitwidth.as_long()-1, 0, z3.LShR(bv, lo))
+    return fix_bitwidth(z3.Extract(bitwidth.as_long()-1, 0, z3.LShR(bv, lo)), bv.size())
 
   # worst case: not even size of the extraction is known
   mask = (1 << bitwidth) - 1
@@ -960,19 +960,29 @@ RETURN k
 </intrinsic>
   '''
   sema = '''
-<intrinsic tech="Other" rettype='unsigned int' name='_bextr_u32'>
+<intrinsic tech="AVX-512" rettype="__m256i" name="_mm256_mask_permutex2var_epi32">
 	<type>Integer</type>
-	<CPUID>BMI1</CPUID>
-	<category>Bit Manipulation</category>
-	<parameter type='unsigned int' varname='a' />
-	<parameter type='unsigned int' varname='start' />
-	<parameter type='unsigned int' varname='len' />
-	<description>Extract contiguous bits from unsigned 32-bit integer "a", and store the result in "dst". Extract the number of bits specified by "len", starting at the bit specified by "start".</description>
+	<CPUID>AVX512VL</CPUID>
+	<CPUID>AVX512F</CPUID>
+	<category>Miscellaneous</category>
+	<parameter varname="a" type="__m256i"/>
+	<parameter varname="k" type="__mmask8"/>
+	<parameter varname="idx" type="__m256i"/>
+	<parameter varname="b" type="__m256i"/>
+	<description>Shuffle 32-bit integers in "a" and "b" across lanes using the corresponding selector and index in "idx", and store the results in "dst" using writemask "k" (elements are copied from "a" when the corresponding mask bit is not set).</description>
 	<operation>
-tmp := ZeroExtend_To_512(a)
-dst := ZeroExtend(tmp[start[7:0]+len[7:0]-1:start[7:0]])
+FOR j := 0 to 7
+	i := j*32
+	off := idx[i+3:i]*32
+	IF k[j]
+		dst[i+31:i] := idx[i+4] ? b[off+31:off] : a[off+31:off]
+	ELSE
+		dst[i+31:i] := a[i+31:i]
+	FI
+ENDFOR
+dst[MAX:256] := 0
 	</operation>
-	<instruction name='bextr' form='r32, r32, r32'/>
+	<instruction name="vpermt2d"/>
 	<header>immintrin.h</header>
 </intrinsic>
   '''
