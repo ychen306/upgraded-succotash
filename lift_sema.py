@@ -6,6 +6,7 @@ from collections import namedtuple, defaultdict
 import z3_utils
 import z3
 import bisect
+import functools
 
 # "IR"
 Instruction = namedtuple('Instruction', ['op', 'bitwidth', 'args'])
@@ -51,22 +52,55 @@ class Slice:
   def size(self):
     return self.hi - self.lo
 
+  @property
+  def bitwidth(self):
+    return self.size()
+
   def to_z3(self):
     return z3.Extract(self.hi-1, self.lo, self.base)
 
   def __repr__(self):
     return f'{self.base}[{self.lo}:{self.hi}]'
 
-ops = {
+def typecheck(dag):
+  '''
+  * make sure the bitwidths match up
+  * bitwidths are scalar bitwidth (e.g., 64)
+  '''
+  for value in dag.values():
+    assert type(value) in (Constant, Instruction, Slice)
+    if isinstance(value, Instruction):
+      if value.op in binary_ops:
+        args = [dag[arg] for arg in value.args]
+        ok = (all(x.bitwidth == args[0].bitwidth for x in args) and
+            args[0].bitwidth == value.bitwidth)
+      elif value.op in cmp_ops:
+        a, b = [dag[arg] for arg in value.args]
+        ok = (a.bitwidth == b.bitwidth and value.bitwidth == 1)
+      elif value.op == 'Select':
+        k, a, b = [dag[arg] for arg in value.args]
+        ok = (k.bitwidth == 1 and a.bitwidth == b.bitwidth == value.bitwidth)
+      else:
+        assert value.op in ['ZExt', 'SExt', 'Trunc']
+        ok = True
+      if not ok:
+        #pprint(value)
+        #pprint(dag)
+        return False
+  return True
+
+binary_ops = {
     'Add', 'Sub', 'Mul', 'SDiv', 'SRem',
     'UDiv', 'URem', 'Shl', 'LShr', 'AShr',
     'And', 'Or', 'Xor',
 
     'FAdd', 'FSub', 'FMul', 'FDiv', 'FRem',
 
-    'Foeq', 'Fone', 'Fogt', 'Foge', 'Folt', 'Fole',
+    }
 
+cmp_ops = {
     'Eq', 'Ne', 'Ugt', 'Uge', 'Ult', 'Ule', 'Sgt', 'Sge', 'Slt', 'Sle',
+    'Foeq', 'Fone', 'Fogt', 'Foge', 'Folt', 'Fole',
     }
 
 op_table = {
@@ -350,7 +384,7 @@ class Translator:
     args = f.children()
     if len(args) == 0:
       # live-in
-      return f
+      return self.extraction_history.record(z3.Extract(f.size()-1, 0, f))
     func = f.decl().name()
     assert func.startswith('fp_')
     _, op, _ = func.split('_')
@@ -376,14 +410,17 @@ if __name__ == '__main__':
     import math
     import functools
 
-    #translator = Translator()
-    #y = semas['_mm_packs_epi32'][1][0]
-    #outs, dag = translator.translate_formula(y)
-    #pprint(outs)
-    #pprint(dag)
-    #exit()
+    translator = Translator()
+    y = semas['_mm512_shuffle_pd'][1][0]
+    outs, dag = translator.translate_formula(y)
+    print('typechecked:', typecheck(dag))
+    pprint(outs)
+    pprint(dag)
+    exit()
 
     var_counts = []
+
+    log = open('lift.log', 'w')
 
     pbar = tqdm(iter(semas.items()), total=len(semas))
     num_tried = 0
@@ -396,6 +433,7 @@ if __name__ == '__main__':
       # compute stat. for average number of variables
       try:
         outs, dag = translator.translate_formula(y)
+        assert typecheck(dag)
         var_counts.append(sum(
             count_reachable_vars(dag, out)
             for out in outs) / len(outs))
@@ -409,9 +447,9 @@ if __name__ == '__main__':
         if len(sizes) != 1:
           gcd = functools.reduce(math.gcd, sizes)
           print(inst, gcd, gcd in sizes)
+        log.write(inst+'\n')
       except AssertionError as e:
-        if str(e).startswith('extraction'):
-          print(inst)
+        print(inst)
         #print('ERROR PROCESSING:', inst)
         #traceback.print_exc()
       pbar.set_description('translated/tried: %d/%d, average var count: %.4f' % (
