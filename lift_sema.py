@@ -7,6 +7,7 @@ import z3_utils
 import z3
 import bisect
 import functools
+import operator
 
 # "IR"
 Instruction = namedtuple('Instruction', ['op', 'bitwidth', 'args'])
@@ -21,6 +22,91 @@ def quantize_bitwidth(bw):
   idx = bisect.bisect_left(bitwidth_table, bw)
   assert idx < len(bitwidth_table), "bitwidth too large for scalar operation"
   return bitwidth_table[idx]
+
+def trunc_zero(x):
+  '''
+  truncate all known zero bits from x
+  '''
+  args = x.children()
+
+  # match a `concat 0, x1`
+  if (z3.is_app_of(x, z3.Z3_OP_CONCAT) and
+      len(args) == 2 and
+      z3.is_bv_value(args[0]) and
+      args[0].as_long() == 0):
+    return args[1]
+
+  # match const
+  if z3.is_bv_value(x):
+    size = len(bin(x.as_long()))-2
+    return z3.BitVecVal(x.as_long(), size)
+
+  return x
+
+def reduce_bitwidth(f):
+  '''
+  for a formula that looks like `f = op concat(0, a), concat(0, b)`
+  try to convert it to `f = concat(0, (op conat(0, a), concat(0, b))`
+  so that the inner concat (e.g., zext) is smaller
+
+  do this similarly for `f = op concat(0, a), const`, where const
+  has unnecessarily large bitwidth
+  '''
+  op = z3_utils.get_z3_app(f)
+  # attempt to recursively reduce the bitwidth of sub computation
+  new_args = [reduce_bitwidth(arg) for arg in f.children()]
+
+  if op not in alu_op_constructor:
+    return z3.simplify(f.decl()(*new_args))
+
+  '''
+    z3.Z3_OP_BADD : reduction(operator.add, ident=0),
+    z3.Z3_OP_BMUL : reduction(operator.mul, ident=1),
+    z3.Z3_OP_BUDIV : z3.UDiv,
+    z3.Z3_OP_BUREM : z3.URem,
+    z3.Z3_OP_BLSHR : z3.LShR,
+    z3.Z3_OP_BSHL : operator.lshift,
+
+    z3.Z3_OP_BSDIV : lambda a, b: a/b,
+    
+    z3.Z3_OP_BSMOD : operator.mod,
+    z3.Z3_OP_BASHR : operator.rshift,
+    z3.Z3_OP_BSUB : operator.sub,
+
+    z3.Z3_OP_BSDIV_I: lambda a, b: a/b,
+    z3.Z3_OP_BUDIV_I: z3.UDiv,
+
+    z3.Z3_OP_BUREM_I: z3.URem,
+    z3.Z3_OP_BSMOD_I: operator.mod,
+  '''
+  is_unsigned = True
+  pre_zext_args = [trunc_zero(x) for x in new_args]
+  if op == z3.Z3_OP_BADD:
+    required_bits = max(x.size() for x in pre_zext_args) + len(new_args) - 1
+  elif op == z3.Z3_OP_BMUL:
+    required_bits = sum(x.size() for x in pre_zext_args)
+  elif op in (z3.Z3_OP_BUDIV, z3.Z3_OP_BUDIV_I):
+    required_bits = sum(x.size() for x in pre_zext_args)
+  elif op == z3.Z3_OP_BLSHR:
+    required_bits = pre_zext_args[0].size()
+  elif op == z3.Z3_OP_BSHL:
+    required_bits = f.size()
+  elif op in (z3.Z3_OP_BUREM, z3.Z3_OP_BUREM_I):
+    required_bits = pre_zext_args[0].size()
+  else:
+    # FIXME: also handle signed operation
+    # give up
+    return z3.simplify(f.decl()(*new_args))
+  
+  if is_unsigned:
+    zext_args = [
+        z3.ZeroExt(required_bits-x.size(), x)
+        for x in pre_zext_args
+        ]
+    f_reduced = alu_op_constructor[op](*zext_args)
+    if f_reduced.size() > f.size(): # give up
+      return z3.simplify(alu_op_constructor[op](*new_args))
+    return z3.simplify(z3.ZeroExt(f.size()-f_reduced.size(), f_reduced))
 
 class Slice:
   def __init__(self, base, lo, hi):
@@ -103,13 +189,36 @@ cmp_ops = {
     'Foeq', 'Fone', 'Fogt', 'Foge', 'Folt', 'Fole',
     }
 
+def reduction(op, ident):
+  return lambda *xs: functools.reduce(op, xs, ident)
+
+alu_op_constructor = {
+    z3.Z3_OP_BADD : reduction(operator.add, ident=0),
+    z3.Z3_OP_BMUL : reduction(operator.mul, ident=1),
+    z3.Z3_OP_BUDIV : z3.UDiv,
+    z3.Z3_OP_BUREM : z3.URem,
+    z3.Z3_OP_BLSHR : z3.LShR,
+    z3.Z3_OP_BSHL : operator.lshift,
+
+    z3.Z3_OP_BSDIV : lambda a, b: a/b,
+    
+    z3.Z3_OP_BSMOD : operator.mod,
+    z3.Z3_OP_BASHR : operator.rshift,
+    z3.Z3_OP_BSUB : operator.sub,
+
+    z3.Z3_OP_BSDIV_I: lambda a, b: a/b,
+    z3.Z3_OP_BUDIV_I: z3.UDiv,
+
+    z3.Z3_OP_BUREM_I: z3.URem,
+    z3.Z3_OP_BSMOD_I: operator.mod,
+    }
+
 op_table = {
     z3.Z3_OP_AND: 'And',
     z3.Z3_OP_OR: 'Or',
     z3.Z3_OP_XOR: 'Xor',
     #z3.Z3_OP_FALSE
     #z3.Z3_OP_TRUE
-    z3.Z3_OP_NOT: 'Not',
     z3.Z3_OP_ITE: 'Select',
     z3.Z3_OP_BAND : 'And',
     z3.Z3_OP_BOR : 'Or',
@@ -281,6 +390,7 @@ class Translator:
     self.z3op_translators = {
         z3.Z3_OP_TRUE: self.translate_true, 
         z3.Z3_OP_FALSE: self.translate_false,
+        z3.Z3_OP_NOT: self.translate_bool_not,
         z3.Z3_OP_BNOT: self.translate_not,
         z3.Z3_OP_BNEG: self.translate_neg,
         z3.Z3_OP_EXTRACT: self.translate_extract,
@@ -345,6 +455,15 @@ class Translator:
   
   def translate_false(*_):
     return Constant(z3.BitVecVal(0, 1))
+
+  def translate_bool_not(self, f):
+    [x] = f.children()
+    return Instruction(
+        op='Xor',
+        bitwidth=1,
+        args=[
+          self.translate(z3.BitVecVal(1,1)),
+          self.translate(x)])
   
   def translate_not(self, f):
     [x] = f.children()
@@ -370,15 +489,45 @@ class Translator:
       return trunc(self.translate(z3.LShR(x, lo)), ext.size())
     return trunc(self.translate(x), ext.size())
 
+  def try_translate_sext(self, concat):
+    '''
+    don't even bother trying to pattern match this...
+    just prove it
+    '''
+    s = z3.Solver()
+    x = concat.children()[-1]
+    sext = z3.SignExt(concat.size()-x.size(), x)
+    is_sext = s.check(concat != sext) == z3.unsat
+    if is_sext:
+      return Instruction(
+          op='SExt', 
+          bitwidth=quantize_bitwidth(concat.size()),
+          args=[self.translate(x)])
+    return None
+
   def translate_concat(self, concat):
+    '''
+    try to convert concat of sign bit to sext
+    '''
+    sext = self.try_translate_sext(concat)
+    if sext is not None:
+      return sext
+
     args = concat.children()
     assert len(args) == 2, "only support using concat for zext"
     a, b = args
     assert z3.is_bv_value(a) and a.as_long() == 0,\
         "only support using concat for zero extension"
+
+    b_translated = self.translate(b)
+    # there's a chance that we already upgraded the bitwidth of b
+    # during translation (e.g. b.size = 17 and we normalize to 32)
+    concat_size = quantize_bitwidth(concat.size())
+    if self.ir[b_translated].bitwidth == concat_size:
+      return self.ir[b_translated]
     return Instruction(
         op='ZExt', 
-        bitwidth=quantize_bitwidth(concat.size()), args=[self.translate(b)])
+        bitwidth=concat_size, args=[b_translated])
 
   def translate_uninterpreted(self, f):
     args = f.children()
@@ -410,13 +559,19 @@ if __name__ == '__main__':
     import math
     import functools
 
-    translator = Translator()
-    y = semas['_mm512_shuffle_pd'][1][0]
-    outs, dag = translator.translate_formula(y)
-    print('typechecked:', typecheck(dag))
-    pprint(outs)
-    pprint(dag)
-    exit()
+    #'_mm_avg_pu16'
+    #'_mm_avgw'
+    #translator = Translator()
+    #y = semas['_mm_sign_pi8'][1][0]
+    ##y = semas['_mm512_avg_epu16'][1][0]
+    #y_reduced = reduce_bitwidth(y)
+    #z3.prove(y_reduced == y)
+    #y = y_reduced
+    #outs, dag = translator.translate_formula(y)
+    #print('typechecked:', typecheck(dag))
+    #pprint(outs)
+    #pprint(dag)
+    #exit()
 
     var_counts = []
 
@@ -426,9 +581,14 @@ if __name__ == '__main__':
     num_tried = 0
     num_translated = 0
     for inst, sema in pbar:
+      num_tried += 1
+
       translator = Translator()
       y = sema[1][0]
-      num_tried += 1
+      y_reduced = reduce_bitwidth(y)
+      if z3.Solver().check(y_reduced != y) != z3.unsat:
+        continue
+      y = y_reduced
 
       # compute stat. for average number of variables
       try:
@@ -448,7 +608,11 @@ if __name__ == '__main__':
           gcd = functools.reduce(math.gcd, sizes)
           print(inst, gcd, gcd in sizes)
         log.write(inst+'\n')
-      except AssertionError as e:
+      except Exception as e:
+        if not isinstance(e, AssertionError):
+          print('Error processing', inst)
+          traceback.print_exc()
+          exit()
         print(inst)
         #print('ERROR PROCESSING:', inst)
         #traceback.print_exc()
