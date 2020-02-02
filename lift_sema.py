@@ -13,6 +13,23 @@ import operator
 Instruction = namedtuple('Instruction', ['op', 'bitwidth', 'args'])
 Constant = namedtuple('Constant', ['value', 'bitwidth'])
 
+class DynamicSlice:
+  def __init__(self, base, idx, stride):
+    self.base = base
+    self.idx = idx
+    self.stride = stride
+    self.bitwidth = stride
+    self.hash_key = base, idx, stride
+
+  def __hash__(self):
+    return hash(self.hash_key)
+
+  def __eq__(self, other):
+    return self.hash_key == other.hash_key
+
+  def __repr__(self):
+    return f'choose<{self.stride}>({self.base}).at({self.idx})'
+
 def trunc(x, size):
   return Instruction(op='Trunc', bitwidth=size, args=[x])
 
@@ -43,6 +60,88 @@ def trunc_zero(x):
 
   return x
 
+def match_dynamic_slice(f):
+  '''
+  z3 doesn't support Extract with dynamic parameters,
+  so we compile the semantics of `a[i*stride:(i+1)*stride]` into `trunc(a >> (stride*i))`
+  '''
+  if not z3.is_app_of(f, z3.Z3_OP_EXTRACT):
+    return None
+
+  hi, lo = f.params()
+  if lo != 0:
+    return None
+
+  [x] = f.children()
+  if not z3.is_app_of(x, z3.Z3_OP_BLSHR):
+    return None
+
+  base, offset = x.children()
+  offset = trunc_zero(offset)
+  if not z3.is_app_of(offset, z3.Z3_OP_BMUL):
+    return None
+
+  stride, idx = offset.children()
+  idx = trunc_zero(idx)
+  if not z3.is_bv_value(stride):
+    return None
+
+  if stride.as_long() != hi + 1:
+    return None
+
+  return DynamicSlice(base=base, idx=idx, stride=stride.as_long())
+  
+
+def elim_dead_branches(f):
+  '''
+  remove provably dead branches in z3.If
+  '''
+  s = z3.Solver()
+
+  cache = {}
+  def memoize(elim):
+    def wrapped(f):
+      if f in cache:
+        return cache[f]
+      new_f = elim(f)
+      cache[f] = new_f
+      return new_f
+    return wrapped
+
+  @memoize
+  def elim(f):
+    if z3.is_app_of(f, z3.Z3_OP_ITE):
+      cond, a, b = f.children()
+      always_true = s.check(z3.Not(cond)) == z3.unsat
+      if always_true:
+        return elim(a)
+      always_false = s.check(cond) == z3.unsat
+      if always_false:
+        return elim(b)
+
+      cond2 = elim(cond)
+
+      # can't statically determine which branch, follow both!
+      # 1) follow the true branch
+      s.push()
+      s.add(cond)
+      a2 = elim(a)
+      s.pop()
+
+      # 2) follow the false branch
+      s.push()
+      s.add(z3.Not(cond))
+      b2 = elim(b)
+      s.pop()
+
+      return z3.simplify(z3.If(cond2, a2, b2))
+    else:
+      args = f.children()
+      new_args = [elim(arg) for arg in args]
+      return z3.simplify(z3.substitute(f, *zip(args, new_args)))
+
+  return elim(f)
+
 def reduce_bitwidth(f):
   '''
   for a formula that looks like `f = op concat(0, a), concat(0, b)`
@@ -52,61 +151,80 @@ def reduce_bitwidth(f):
   do this similarly for `f = op concat(0, a), const`, where const
   has unnecessarily large bitwidth
   '''
-  op = z3_utils.get_z3_app(f)
-  # attempt to recursively reduce the bitwidth of sub computation
-  new_args = [reduce_bitwidth(arg) for arg in f.children()]
+  # mapping f -> bitwidth-reduced f
+  reduced = {}
 
-  if op not in alu_op_constructor:
-    return z3.simplify(f.decl()(*new_args))
+  def memoize(reducer):
+    def wrapped(f):
+      if f in reduced:
+        return reduced[f]
+      f_reduced = reducer(f)
+      reduced[f] = f_reduced
+      return f_reduced
+    return wrapped
 
-  '''
-    z3.Z3_OP_BADD : reduction(operator.add, ident=0),
-    z3.Z3_OP_BMUL : reduction(operator.mul, ident=1),
-    z3.Z3_OP_BUDIV : z3.UDiv,
-    z3.Z3_OP_BUREM : z3.URem,
-    z3.Z3_OP_BLSHR : z3.LShR,
-    z3.Z3_OP_BSHL : operator.lshift,
+  @memoize
+  def reduce_bitwidth_rec(f):
+    if f in reduced:
+      return reduced[f]
 
-    z3.Z3_OP_BSDIV : lambda a, b: a/b,
+    op = z3_utils.get_z3_app(f)
+    # attempt to recursively reduce the bitwidth of sub computation
+    new_args = [reduce_bitwidth_rec(arg) for arg in f.children()]
+
+    if op not in alu_op_constructor:
+      return z3.simplify(z3.substitute(f, *zip(f.children(), new_args)))
+
+    '''
+      z3.Z3_OP_BADD : reduction(operator.add, ident=0),
+      z3.Z3_OP_BMUL : reduction(operator.mul, ident=1),
+      z3.Z3_OP_BUDIV : z3.UDiv,
+      z3.Z3_OP_BUREM : z3.URem,
+      z3.Z3_OP_BLSHR : z3.LShR,
+      z3.Z3_OP_BSHL : operator.lshift,
+
+      z3.Z3_OP_BSDIV : lambda a, b: a/b,
+      
+      z3.Z3_OP_BSMOD : operator.mod,
+      z3.Z3_OP_BASHR : operator.rshift,
+      z3.Z3_OP_BSUB : operator.sub,
+
+      z3.Z3_OP_BSDIV_I: lambda a, b: a/b,
+      z3.Z3_OP_BUDIV_I: z3.UDiv,
+
+      z3.Z3_OP_BUREM_I: z3.URem,
+      z3.Z3_OP_BSMOD_I: operator.mod,
+    '''
+    is_unsigned = True
+    pre_zext_args = [trunc_zero(x) for x in new_args]
+    if op == z3.Z3_OP_BADD:
+      required_bits = max(x.size() for x in pre_zext_args) + len(new_args) - 1
+    elif op == z3.Z3_OP_BMUL:
+      required_bits = sum(x.size() for x in pre_zext_args)
+    elif op in (z3.Z3_OP_BUDIV, z3.Z3_OP_BUDIV_I):
+      required_bits = sum(x.size() for x in pre_zext_args)
+    elif op == z3.Z3_OP_BLSHR:
+      required_bits = pre_zext_args[0].size()
+    elif op == z3.Z3_OP_BSHL:
+      required_bits = f.size()
+    elif op in (z3.Z3_OP_BUREM, z3.Z3_OP_BUREM_I):
+      required_bits = pre_zext_args[0].size()
+    else:
+      # FIXME: also handle signed operation
+      # give up
+      return z3.simplify(f.decl()(*new_args))
     
-    z3.Z3_OP_BSMOD : operator.mod,
-    z3.Z3_OP_BASHR : operator.rshift,
-    z3.Z3_OP_BSUB : operator.sub,
+    if is_unsigned:
+      zext_args = [
+          z3.ZeroExt(required_bits-x.size(), x)
+          for x in pre_zext_args
+          ]
+      f_reduced = alu_op_constructor[op](*zext_args)
+      if f_reduced.size() > f.size(): # give up
+        return z3.simplify(alu_op_constructor[op](*new_args))
+      return z3.simplify(z3.ZeroExt(f.size()-f_reduced.size(), f_reduced))
 
-    z3.Z3_OP_BSDIV_I: lambda a, b: a/b,
-    z3.Z3_OP_BUDIV_I: z3.UDiv,
-
-    z3.Z3_OP_BUREM_I: z3.URem,
-    z3.Z3_OP_BSMOD_I: operator.mod,
-  '''
-  is_unsigned = True
-  pre_zext_args = [trunc_zero(x) for x in new_args]
-  if op == z3.Z3_OP_BADD:
-    required_bits = max(x.size() for x in pre_zext_args) + len(new_args) - 1
-  elif op == z3.Z3_OP_BMUL:
-    required_bits = sum(x.size() for x in pre_zext_args)
-  elif op in (z3.Z3_OP_BUDIV, z3.Z3_OP_BUDIV_I):
-    required_bits = sum(x.size() for x in pre_zext_args)
-  elif op == z3.Z3_OP_BLSHR:
-    required_bits = pre_zext_args[0].size()
-  elif op == z3.Z3_OP_BSHL:
-    required_bits = f.size()
-  elif op in (z3.Z3_OP_BUREM, z3.Z3_OP_BUREM_I):
-    required_bits = pre_zext_args[0].size()
-  else:
-    # FIXME: also handle signed operation
-    # give up
-    return z3.simplify(f.decl()(*new_args))
-  
-  if is_unsigned:
-    zext_args = [
-        z3.ZeroExt(required_bits-x.size(), x)
-        for x in pre_zext_args
-        ]
-    f_reduced = alu_op_constructor[op](*zext_args)
-    if f_reduced.size() > f.size(): # give up
-      return z3.simplify(alu_op_constructor[op](*new_args))
-    return z3.simplify(z3.ZeroExt(f.size()-f_reduced.size(), f_reduced))
+  return reduce_bitwidth_rec(f)
 
 class Slice:
   def __init__(self, base, lo, hi):
@@ -154,7 +272,7 @@ def typecheck(dag):
   * bitwidths are scalar bitwidth (e.g., 64)
   '''
   for value in dag.values():
-    assert type(value) in (Constant, Instruction, Slice)
+    assert type(value) in (Constant, Instruction, Slice, DynamicSlice)
     if isinstance(value, Instruction):
       if value.op in binary_ops:
         args = [dag[arg] for arg in value.args]
@@ -481,9 +599,18 @@ class Translator:
     if is_simple_extraction(ext):
       s = self.extraction_history.record(ext)
       return s
+
+    s = match_dynamic_slice(ext)
+    if s is not None:
+      assert is_simple_extraction(s.idx)
+      assert z3.is_app_of(s.base, z3.Z3_OP_UNINTERPRETED)
+      assert len(s.base.children()) == 0
+      return s
+
     [x] = ext.children()
     assert x.size() <= 64,\
         "extraction too complex to model in scalar code"
+
     _, lo = ext.params()
     if lo > 0:
       return trunc(self.translate(z3.LShR(x, lo)), ext.size())
@@ -559,23 +686,28 @@ if __name__ == '__main__':
     import math
     import functools
 
-    #'_mm_avg_pu16'
-    #'_mm_avgw'
-    #translator = Translator()
-    #y = semas['_mm_sign_pi8'][1][0]
-    ##y = semas['_mm512_avg_epu16'][1][0]
-    #y_reduced = reduce_bitwidth(y)
-    #z3.prove(y_reduced == y)
-    #y = y_reduced
-    #outs, dag = translator.translate_formula(y)
-    #print('typechecked:', typecheck(dag))
-    #pprint(outs)
-    #pprint(dag)
-    #exit()
+    debug = True
+    if debug:
+      '_mm_avg_pu16'
+      '_mm_avgw'
+      translator = Translator()
+      y = semas['_mm_shuffle_epi8'][1][0]
+      y = elim_dead_branches(y)
+      #y = semas['_mm512_avg_epu16'][1][0]
+      y_reduced = reduce_bitwidth(y)
+      z3.prove(y_reduced == y)
+      y = y_reduced
+      outs, dag = translator.translate_formula(y)
+      print('typechecked:', typecheck(dag))
+      pprint(outs)
+      pprint(dag)
+      exit()
 
     var_counts = []
 
     log = open('lift.log', 'w')
+
+    s = z3.Solver()
 
     pbar = tqdm(iter(semas.items()), total=len(semas))
     num_tried = 0
@@ -585,9 +717,14 @@ if __name__ == '__main__':
 
       translator = Translator()
       y = sema[1][0]
+      #print('... REDUCING BITWIDTH ...')
       y_reduced = reduce_bitwidth(y)
-      if z3.Solver().check(y_reduced != y) != z3.unsat:
-        continue
+      #print('... CHECKING ...')
+      #broken = s.check(y_reduced != y) != z3.unsat
+      #print('... CHECKED ...')
+      #if broken:
+      #  print('reduce_bitwidth BROKE', inst)
+      #  continue
       y = y_reduced
 
       # compute stat. for average number of variables
