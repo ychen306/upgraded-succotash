@@ -30,6 +30,22 @@ class DynamicSlice:
   def __repr__(self):
     return f'choose<{self.stride}>({self.base}).at({self.idx})'
 
+class Mux:
+  def __init__(self, ctrl, keys, values, bitwidth):
+    self.ctrl = ctrl
+    self.kv_pairs = tuple(sorted(zip(keys, values)))
+    self.bitwidth = bitwidth
+
+  def __hash__(self):
+    return hash(self.kv_pairs)
+
+  def __eq__(self, other):
+    return self.kv_pairs == other.kv_pairs
+
+  def __repr__(self):
+    mapping = ', '.join(f'{k} -> {v}' for k, v in self.kv_pairs)
+    return f'Mux[{self.ctrl}]({mapping})'
+
 def trunc(x, size):
   return Instruction(op='Trunc', bitwidth=size, args=[x])
 
@@ -59,6 +75,75 @@ def trunc_zero(x):
     return z3.BitVecVal(x.as_long(), size)
 
   return x
+
+def get_ctrl_key(f, ctrl):
+  '''
+  check if f is an `if` matching on ctrl
+  return the constant being matched if yes
+  return None otherwise
+  '''
+  if not z3.is_app_of(f, z3.Z3_OP_ITE):
+    return None
+
+  cond, _, _ = f.children()
+  if not z3.is_app_of(cond, z3.Z3_OP_EQ):
+    return None
+
+  ctrl2, key = cond.children()
+  if z3_utils.askey(ctrl2) != z3_utils.askey(ctrl):
+    return None
+
+  if not z3.is_bv_value(key):
+    return None
+
+  return key.as_long()
+
+def match_mux(f):
+  '''
+  turn (if x==0 ... else (if x == 1 ... else (if x == 2  ...))) into a mux
+  '''
+  if not z3.is_app_of(f, z3.Z3_OP_ITE):
+    return None
+
+  cond, _, _ = f.children()
+  if not z3.is_app_of(cond, z3.Z3_OP_EQ):
+    return None
+
+  ctrl, _ = cond.children()
+
+  mux = {} 
+  s = z3.Solver()
+  while True:
+    key = get_ctrl_key(f, ctrl)
+    if key is None:
+      if s.check() == z3.unsat:
+        # this is a dead branch => we have exhaustively matched everything!
+        break
+
+      # try to prove that this is a implicit branch 
+      # (i.e., when we get here the key has to be a certain value)
+      implicit_key = z3.BitVec('implicit_key', ctrl.size())
+      solver_stat = s.check(ctrl == implicit_key)
+      if solver_stat == z3.sat:
+        # see if there's another key not matched
+        key = s.model().eval(implicit_key).as_long()
+        s.add(implicit_key != key)
+        if s.check(ctrl == implicit_key) != z3.unsat:
+          # got to the end of the trail but still didn't exhaust,
+          # bail!
+          return None
+        mux[key] = f
+        break
+
+      return None
+
+    cond, a, b = f.children()
+    mux[key] = a
+    # follow the else branch
+    f = b
+    s.add(z3.Not(cond))
+
+  return mux, ctrl
 
 def match_dynamic_slice(f):
   '''
@@ -175,26 +260,6 @@ def reduce_bitwidth(f):
     if op not in alu_op_constructor:
       return z3.simplify(z3.substitute(f, *zip(f.children(), new_args)))
 
-    '''
-      z3.Z3_OP_BADD : reduction(operator.add, ident=0),
-      z3.Z3_OP_BMUL : reduction(operator.mul, ident=1),
-      z3.Z3_OP_BUDIV : z3.UDiv,
-      z3.Z3_OP_BUREM : z3.URem,
-      z3.Z3_OP_BLSHR : z3.LShR,
-      z3.Z3_OP_BSHL : operator.lshift,
-
-      z3.Z3_OP_BSDIV : lambda a, b: a/b,
-      
-      z3.Z3_OP_BSMOD : operator.mod,
-      z3.Z3_OP_BASHR : operator.rshift,
-      z3.Z3_OP_BSUB : operator.sub,
-
-      z3.Z3_OP_BSDIV_I: lambda a, b: a/b,
-      z3.Z3_OP_BUDIV_I: z3.UDiv,
-
-      z3.Z3_OP_BUREM_I: z3.URem,
-      z3.Z3_OP_BSMOD_I: operator.mod,
-    '''
     is_unsigned = True
     pre_zext_args = [trunc_zero(x) for x in new_args]
     if op == z3.Z3_OP_BADD:
@@ -215,6 +280,7 @@ def reduce_bitwidth(f):
       return z3.simplify(f.decl()(*new_args))
     
     if is_unsigned:
+      required_bits = max(required_bits, max(x.size() for x in pre_zext_args))
       zext_args = [
           z3.ZeroExt(required_bits-x.size(), x)
           for x in pre_zext_args
@@ -272,7 +338,7 @@ def typecheck(dag):
   * bitwidths are scalar bitwidth (e.g., 64)
   '''
   for value in dag.values():
-    assert type(value) in (Constant, Instruction, Slice, DynamicSlice)
+    assert type(value) in (Constant, Instruction, Slice, DynamicSlice, Mux)
     if isinstance(value, Instruction):
       if value.op in binary_ops:
         args = [dag[arg] for arg in value.args]
@@ -553,7 +619,16 @@ class Translator:
     node_id = self.new_id()
     z3op = z3_utils.get_z3_app(f)
 
-    if z3op in self.z3op_translators:
+    # try to match this to a mux
+    mux = match_mux(f)
+    if mux is not None:
+      mux, ctrl = mux
+      keys = list(mux.keys())
+      values = [self.translate(mux[k]) for k in keys]
+      bitwidth = mux[keys[0]].size()
+      assert all(v.size() == bitwidth for v in mux.values())
+      node = Mux(ctrl, keys=keys, values=values, bitwidth=bitwidth)
+    elif z3op in self.z3op_translators:
       # see if there's a specialized translator
       node = self.z3op_translators[z3op](f)
     else:
@@ -602,7 +677,9 @@ class Translator:
 
     s = match_dynamic_slice(ext)
     if s is not None:
-      assert is_simple_extraction(s.idx)
+      assert (z3.is_app_of(s.idx, z3.Z3_OP_UNINTERPRETED) and 
+          len(s.idx.children()) == 0) or (
+          z3.is_app_of(s.idx, z3.Z3_OP_EXTRACT) and is_simple_extraction(s.idx))
       assert z3.is_app_of(s.base, z3.Z3_OP_UNINTERPRETED)
       assert len(s.base.children()) == 0
       return s
@@ -691,7 +768,7 @@ if __name__ == '__main__':
       '_mm_avg_pu16'
       '_mm_avgw'
       translator = Translator()
-      y = semas['_mm_shuffle_epi8'][1][0]
+      y = semas['_mm512_maskz_inserti64x2'][1][0]
       y = elim_dead_branches(y)
       #y = semas['_mm512_avg_epu16'][1][0]
       y_reduced = reduce_bitwidth(y)
@@ -718,6 +795,7 @@ if __name__ == '__main__':
       translator = Translator()
       y = sema[1][0]
       #print('... REDUCING BITWIDTH ...')
+      y = elim_dead_branches(y)
       y_reduced = reduce_bitwidth(y)
       #print('... CHECKING ...')
       #broken = s.check(y_reduced != y) != z3.unsat
