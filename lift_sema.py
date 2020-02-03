@@ -8,6 +8,7 @@ import z3
 import bisect
 import functools
 import operator
+import math
 
 # "IR"
 Instruction = namedtuple('Instruction', ['op', 'bitwidth', 'args'])
@@ -50,6 +51,12 @@ def trunc(x, size):
   return Instruction(op='Trunc', bitwidth=size, args=[x])
 
 bitwidth_table = [1, 8, 16, 32, 64]
+
+def get_size(x):
+  try:
+    return x.bitwidth
+  except:
+    return x.size()
 
 def quantize_bitwidth(bw):
   idx = bisect.bisect_left(bitwidth_table, bw)
@@ -527,7 +534,6 @@ class ExtractionHistory:
             break
     return translated
 
-
 def recover_sub(f):
   '''
   z3 simplifies `a + b` to `a + 0b111..11 * b`,
@@ -603,13 +609,30 @@ class Translator:
     if not z3.is_app_of(f, z3.Z3_OP_CONCAT):
       outs = [self.translate(f)]
     else:
+      elems = f.children()
+      sizes = [x.size() for x in elems]
+      if len(set(sizes)) != 1:
+        # if the sizes are not uniform,
+        # partition them so that they are uniform
+        size = functools.reduce(math.gcd, sizes)
+        partitioned_elems = []
+        for x in elems:
+          if x.size() == size:
+            partitioned_elems.append(x)
+            continue
+          partitioned_elems.extend(
+              z3.simplify(z3.Extract(i+size-1, i, x))
+              for i in range(0, x.size(), size))
+        elems = partitioned_elems
+
       # output is a concat, probably vector code
-      outs = [self.translate(elem_f) for elem_f in f.children()]
+      outs = [self.translate(x) for x in elems]
     # translate the slices
     slice2ir = self.extraction_history.translate_slices(self)
     for node_id, node in self.ir.items():
       if isinstance(node, Slice):
         self.ir[node_id] = slice2ir[node]
+
     return outs, self.ir
 
   def translate(self, f):
@@ -627,7 +650,10 @@ class Translator:
       values = [self.translate(mux[k]) for k in keys]
       bitwidth = mux[keys[0]].size()
       assert all(v.size() == bitwidth for v in mux.values())
-      node = Mux(ctrl, keys=keys, values=values, bitwidth=bitwidth)
+      node = Mux(
+          self.translate(ctrl), 
+          keys=keys, values=values,
+          bitwidth=bitwidth)
     elif z3op in self.z3op_translators:
       # see if there's a specialized translator
       node = self.z3op_translators[z3op](f)
@@ -763,12 +789,12 @@ if __name__ == '__main__':
     import math
     import functools
 
-    debug = True
+    debug = False
     if debug:
       '_mm_avg_pu16'
       '_mm_avgw'
       translator = Translator()
-      y = semas['_mm512_maskz_inserti64x2'][1][0]
+      y = semas['_mm_mask_fmsub_ss'][1][0]
       y = elim_dead_branches(y)
       #y = semas['_mm512_avg_epu16'][1][0]
       y_reduced = reduce_bitwidth(y)
@@ -809,15 +835,7 @@ if __name__ == '__main__':
       try:
         outs, dag = translator.translate_formula(y)
         assert typecheck(dag)
-        var_counts.append(sum(
-            count_reachable_vars(dag, out)
-            for out in outs) / len(outs))
         num_translated += 1
-        def get_size(x):
-          try:
-            return x.bitwidth
-          except:
-            return x.size()
         sizes = {get_size(dag[y]) for y in outs}
         if len(sizes) != 1:
           gcd = functools.reduce(math.gcd, sizes)
@@ -831,5 +849,5 @@ if __name__ == '__main__':
         print(inst)
         #print('ERROR PROCESSING:', inst)
         #traceback.print_exc()
-      pbar.set_description('translated/tried: %d/%d, average var count: %.4f' % (
-        num_translated, num_tried, sum(var_counts)/len(var_counts)))
+      pbar.set_description('translated/tried: %d/%d' % (
+        num_translated, num_tried))
